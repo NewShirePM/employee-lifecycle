@@ -25,6 +25,20 @@ const CONFIG = {
   },
   adminEmails: ["bturner@newshirepm.com"],
   filesLibraryUrl: "https://vanrockre.sharepoint.com/ELC_EmployeeFiles",
+  // Predefined groups shown in dropdowns. Users can also create custom groups by typing.
+  templateGroups: {
+    Onboarding: [
+      "On Site Team Member",
+      "Off Site Team Member",
+      "Virtual Assistant",
+      "Maintenance",
+      "Corporate Office Team Member",
+    ],
+    Offboarding: [
+      "Voluntary Resignation",
+      "Involuntary Termination",
+    ],
+  },
 };
 
 const GRAPH = "https://graph.microsoft.com/v1.0";
@@ -239,50 +253,99 @@ function useMsal() {
 // ============================================================
 // DEFAULT TEMPLATE TASKS — seed when ELC_TemplateTasks is empty
 // ============================================================
+// Convention: TemplateGroup === "" means the task applies to EVERY group of that JourneyType
+// (i.e. it's a common/universal step). A named TemplateGroup limits the task to that group.
 const DEFAULT_TEMPLATES = [
-  // ── ONBOARDING ──
-  { JourneyType: "Onboarding", Phase: "Pre-Start", Title: "Send offer letter & collect signature", AssigneeRole: "HR", OffsetDays: -10, Required: true, Notes: "" },
-  { JourneyType: "Onboarding", Phase: "Pre-Start", Title: "Background check & I-9 verification", AssigneeRole: "HR", OffsetDays: -7, Required: true, Notes: "" },
-  { JourneyType: "Onboarding", Phase: "Pre-Start", Title: "Create M365 account & assign license", AssigneeRole: "IT", OffsetDays: -3, Required: true, Notes: "" },
-  { JourneyType: "Onboarding", Phase: "Pre-Start", Title: "Provision AppFolio user", AssigneeRole: "IT", OffsetDays: -3, Required: false, Notes: "Skip for VAs and back-office only roles." },
-  { JourneyType: "Onboarding", Phase: "Pre-Start", Title: "Order equipment (laptop / monitor / phone)", AssigneeRole: "IT", OffsetDays: -7, Required: false, Notes: "" },
-  { JourneyType: "Onboarding", Phase: "Pre-Start", Title: "Add to Employees SharePoint list", AssigneeRole: "HR", OffsetDays: -2, Required: true, Notes: "Title, Email, JobTitle, ManagerEmail." },
+  // ── ONBOARDING — COMMON (applies to every onboarding group) ──
+  { JourneyType: "Onboarding", TemplateGroup: "", Phase: "Pre-Start", Title: "Send offer letter & collect signature", AssigneeRole: "HR", OffsetDays: -10, Required: true, Notes: "" },
+  { JourneyType: "Onboarding", TemplateGroup: "", Phase: "Pre-Start", Title: "Background check & I-9 verification", AssigneeRole: "HR", OffsetDays: -7, Required: true, Notes: "" },
+  { JourneyType: "Onboarding", TemplateGroup: "", Phase: "Pre-Start", Title: "Create M365 account & assign license", AssigneeRole: "IT", OffsetDays: -3, Required: true, Notes: "" },
+  { JourneyType: "Onboarding", TemplateGroup: "", Phase: "Pre-Start", Title: "Add to Employees SharePoint list", AssigneeRole: "HR", OffsetDays: -2, Required: true, Notes: "Title, Email, JobTitle, ManagerEmail." },
+  { JourneyType: "Onboarding", TemplateGroup: "", Phase: "Day 1",     Title: "Welcome / virtual orientation", AssigneeRole: "Manager", OffsetDays: 0, Required: true, Notes: "" },
+  { JourneyType: "Onboarding", TemplateGroup: "", Phase: "Day 1",     Title: "Sign employee handbook & policies", AssigneeRole: "Employee", OffsetDays: 0, Required: true, Notes: "" },
+  { JourneyType: "Onboarding", TemplateGroup: "", Phase: "Day 1",     Title: "Set up direct deposit & W-4", AssigneeRole: "Employee", OffsetDays: 0, Required: true, Notes: "" },
+  { JourneyType: "Onboarding", TemplateGroup: "", Phase: "Day 1",     Title: "Introduce to team & key contacts", AssigneeRole: "Manager", OffsetDays: 0, Required: true, Notes: "" },
+  { JourneyType: "Onboarding", TemplateGroup: "", Phase: "Week 1",    Title: "Enroll in NewShire University intro path", AssigneeRole: "Manager", OffsetDays: 1, Required: true, Notes: "Assign role-appropriate learning path." },
+  { JourneyType: "Onboarding", TemplateGroup: "", Phase: "Week 1",    Title: "Review role expectations & 30/60/90 plan", AssigneeRole: "Manager", OffsetDays: 2, Required: true, Notes: "" },
+  { JourneyType: "Onboarding", TemplateGroup: "", Phase: "Week 1",    Title: "Set up benefits enrollment", AssigneeRole: "HR", OffsetDays: 5, Required: true, Notes: "" },
+  { JourneyType: "Onboarding", TemplateGroup: "", Phase: "30-Day",    Title: "30-day check-in with manager", AssigneeRole: "Manager", OffsetDays: 30, Required: true, Notes: "" },
+  { JourneyType: "Onboarding", TemplateGroup: "", Phase: "30-Day",    Title: "Confirm required trainings complete", AssigneeRole: "HR", OffsetDays: 30, Required: true, Notes: "" },
+  { JourneyType: "Onboarding", TemplateGroup: "", Phase: "90-Day",    Title: "90-day performance review", AssigneeRole: "Manager", OffsetDays: 90, Required: true, Notes: "" },
+  { JourneyType: "Onboarding", TemplateGroup: "", Phase: "90-Day",    Title: "Confirm probation passed / next steps", AssigneeRole: "HR", OffsetDays: 90, Required: true, Notes: "" },
 
-  { JourneyType: "Onboarding", Phase: "Day 1", Title: "Welcome & office tour / virtual orientation", AssigneeRole: "Manager", OffsetDays: 0, Required: true, Notes: "" },
-  { JourneyType: "Onboarding", Phase: "Day 1", Title: "Hand off equipment + login credentials", AssigneeRole: "IT", OffsetDays: 0, Required: true, Notes: "" },
-  { JourneyType: "Onboarding", Phase: "Day 1", Title: "Sign employee handbook & policies", AssigneeRole: "Employee", OffsetDays: 0, Required: true, Notes: "" },
-  { JourneyType: "Onboarding", Phase: "Day 1", Title: "Set up direct deposit & W-4", AssigneeRole: "Employee", OffsetDays: 0, Required: true, Notes: "" },
-  { JourneyType: "Onboarding", Phase: "Day 1", Title: "Introduce to team & key contacts", AssigneeRole: "Manager", OffsetDays: 0, Required: true, Notes: "" },
+  // ── ONBOARDING — On Site Team Member ──
+  { JourneyType: "Onboarding", TemplateGroup: "On Site Team Member", Phase: "Pre-Start", Title: "Order on-site equipment (laptop, monitor, headset)", AssigneeRole: "IT", OffsetDays: -7, Required: true, Notes: "" },
+  { JourneyType: "Onboarding", TemplateGroup: "On Site Team Member", Phase: "Day 1",     Title: "Issue building access badge / property keys", AssigneeRole: "IT", OffsetDays: 0, Required: true, Notes: "" },
+  { JourneyType: "Onboarding", TemplateGroup: "On Site Team Member", Phase: "Day 1",     Title: "Walkthrough of property and resident-facing areas", AssigneeRole: "Manager", OffsetDays: 0, Required: true, Notes: "" },
+  { JourneyType: "Onboarding", TemplateGroup: "On Site Team Member", Phase: "Day 1",     Title: "Hand off equipment + login credentials", AssigneeRole: "IT", OffsetDays: 0, Required: true, Notes: "" },
+  { JourneyType: "Onboarding", TemplateGroup: "On Site Team Member", Phase: "Pre-Start", Title: "Provision AppFolio user", AssigneeRole: "IT", OffsetDays: -3, Required: true, Notes: "" },
+  { JourneyType: "Onboarding", TemplateGroup: "On Site Team Member", Phase: "Week 1",    Title: "Shadow on-site team for resident interactions", AssigneeRole: "Employee", OffsetDays: 3, Required: true, Notes: "" },
 
-  { JourneyType: "Onboarding", Phase: "Week 1", Title: "Enroll in NewShire University intro path", AssigneeRole: "Manager", OffsetDays: 1, Required: true, Notes: "Assign role-appropriate learning path." },
-  { JourneyType: "Onboarding", Phase: "Week 1", Title: "Review role expectations & 30/60/90 plan", AssigneeRole: "Manager", OffsetDays: 2, Required: true, Notes: "" },
-  { JourneyType: "Onboarding", Phase: "Week 1", Title: "Shadow current team members", AssigneeRole: "Employee", OffsetDays: 3, Required: false, Notes: "" },
-  { JourneyType: "Onboarding", Phase: "Week 1", Title: "Set up benefits enrollment", AssigneeRole: "HR", OffsetDays: 5, Required: true, Notes: "" },
+  // ── ONBOARDING — Off Site Team Member ──
+  { JourneyType: "Onboarding", TemplateGroup: "Off Site Team Member", Phase: "Pre-Start", Title: "Ship laptop / monitor / headset to home address", AssigneeRole: "IT", OffsetDays: -10, Required: true, Notes: "Confirm shipping address with new hire." },
+  { JourneyType: "Onboarding", TemplateGroup: "Off Site Team Member", Phase: "Pre-Start", Title: "Set up VPN / remote access credentials", AssigneeRole: "IT", OffsetDays: -3, Required: true, Notes: "" },
+  { JourneyType: "Onboarding", TemplateGroup: "Off Site Team Member", Phase: "Pre-Start", Title: "Provision AppFolio user", AssigneeRole: "IT", OffsetDays: -3, Required: true, Notes: "" },
+  { JourneyType: "Onboarding", TemplateGroup: "Off Site Team Member", Phase: "Day 1",     Title: "Remote welcome call with manager + team intros", AssigneeRole: "Manager", OffsetDays: 0, Required: true, Notes: "" },
+  { JourneyType: "Onboarding", TemplateGroup: "Off Site Team Member", Phase: "Day 1",     Title: "Confirm equipment received & working", AssigneeRole: "IT", OffsetDays: 0, Required: true, Notes: "" },
+  { JourneyType: "Onboarding", TemplateGroup: "Off Site Team Member", Phase: "Week 1",    Title: "Schedule weekly video check-ins", AssigneeRole: "Manager", OffsetDays: 2, Required: true, Notes: "" },
 
-  { JourneyType: "Onboarding", Phase: "30-Day", Title: "30-day check-in with manager", AssigneeRole: "Manager", OffsetDays: 30, Required: true, Notes: "" },
-  { JourneyType: "Onboarding", Phase: "30-Day", Title: "Confirm required trainings complete", AssigneeRole: "HR", OffsetDays: 30, Required: true, Notes: "" },
-  { JourneyType: "Onboarding", Phase: "90-Day", Title: "90-day performance review", AssigneeRole: "Manager", OffsetDays: 90, Required: true, Notes: "" },
-  { JourneyType: "Onboarding", Phase: "90-Day", Title: "Confirm probation passed / next steps", AssigneeRole: "HR", OffsetDays: 90, Required: true, Notes: "" },
+  // ── ONBOARDING — Virtual Assistant ──
+  { JourneyType: "Onboarding", TemplateGroup: "Virtual Assistant", Phase: "Pre-Start", Title: "Set up M365 (mail + Teams) — no laptop ship needed", AssigneeRole: "IT", OffsetDays: -3, Required: true, Notes: "VAs use their own equipment." },
+  { JourneyType: "Onboarding", TemplateGroup: "Virtual Assistant", Phase: "Pre-Start", Title: "Confirm time zone & overlap hours with US team", AssigneeRole: "Manager", OffsetDays: -2, Required: true, Notes: "" },
+  { JourneyType: "Onboarding", TemplateGroup: "Virtual Assistant", Phase: "Day 1",     Title: "Add to VA Tracker (VATrackerRole = VA)", AssigneeRole: "Admin", OffsetDays: 0, Required: true, Notes: "" },
+  { JourneyType: "Onboarding", TemplateGroup: "Virtual Assistant", Phase: "Day 1",     Title: "Walkthrough of VA Tracker, time-logging, and reporting", AssigneeRole: "Manager", OffsetDays: 0, Required: true, Notes: "" },
+  { JourneyType: "Onboarding", TemplateGroup: "Virtual Assistant", Phase: "Week 1",    Title: "Assign initial portfolio / properties to support", AssigneeRole: "Manager", OffsetDays: 2, Required: true, Notes: "" },
+  { JourneyType: "Onboarding", TemplateGroup: "Virtual Assistant", Phase: "Week 1",    Title: "Confirm AppFolio access scope (read-only vs. edit)", AssigneeRole: "IT", OffsetDays: 3, Required: true, Notes: "" },
 
-  // ── OFFBOARDING ──
-  { JourneyType: "Offboarding", Phase: "Notice", Title: "Receive & acknowledge resignation / termination", AssigneeRole: "HR", OffsetDays: -14, Required: true, Notes: "Set EndDate on journey." },
-  { JourneyType: "Offboarding", Phase: "Notice", Title: "Notify payroll & benefits", AssigneeRole: "HR", OffsetDays: -10, Required: true, Notes: "" },
-  { JourneyType: "Offboarding", Phase: "Notice", Title: "Plan knowledge transfer & coverage", AssigneeRole: "Manager", OffsetDays: -10, Required: true, Notes: "" },
-  { JourneyType: "Offboarding", Phase: "Notice", Title: "Schedule exit interview", AssigneeRole: "HR", OffsetDays: -5, Required: true, Notes: "" },
+  // ── ONBOARDING — Maintenance ──
+  { JourneyType: "Onboarding", TemplateGroup: "Maintenance", Phase: "Pre-Start", Title: "Order maintenance tablet / phone", AssigneeRole: "IT", OffsetDays: -7, Required: true, Notes: "" },
+  { JourneyType: "Onboarding", TemplateGroup: "Maintenance", Phase: "Pre-Start", Title: "Assign company vehicle (or confirm mileage policy)", AssigneeRole: "Admin", OffsetDays: -5, Required: true, Notes: "" },
+  { JourneyType: "Onboarding", TemplateGroup: "Maintenance", Phase: "Day 1",     Title: "Issue tool kit + safety equipment", AssigneeRole: "Manager", OffsetDays: 0, Required: true, Notes: "" },
+  { JourneyType: "Onboarding", TemplateGroup: "Maintenance", Phase: "Day 1",     Title: "Issue property keys / lockbox codes", AssigneeRole: "Manager", OffsetDays: 0, Required: true, Notes: "" },
+  { JourneyType: "Onboarding", TemplateGroup: "Maintenance", Phase: "Day 1",     Title: "Provision AppFolio (Maintenance / Work Order role)", AssigneeRole: "IT", OffsetDays: 0, Required: true, Notes: "" },
+  { JourneyType: "Onboarding", TemplateGroup: "Maintenance", Phase: "Week 1",    Title: "OSHA / safety training", AssigneeRole: "HR", OffsetDays: 3, Required: true, Notes: "" },
+  { JourneyType: "Onboarding", TemplateGroup: "Maintenance", Phase: "Week 1",    Title: "EPA refrigerant cert. confirmed (if applicable)", AssigneeRole: "HR", OffsetDays: 5, Required: false, Notes: "" },
 
-  { JourneyType: "Offboarding", Phase: "Final Week", Title: "Complete documentation handoff", AssigneeRole: "Employee", OffsetDays: -3, Required: true, Notes: "" },
-  { JourneyType: "Offboarding", Phase: "Final Week", Title: "Exit interview", AssigneeRole: "HR", OffsetDays: -1, Required: true, Notes: "" },
-  { JourneyType: "Offboarding", Phase: "Final Week", Title: "Final timesheet / expense report submitted", AssigneeRole: "Employee", OffsetDays: -1, Required: true, Notes: "" },
+  // ── ONBOARDING — Corporate Office Team Member ──
+  { JourneyType: "Onboarding", TemplateGroup: "Corporate Office Team Member", Phase: "Pre-Start", Title: "Assign desk / workstation", AssigneeRole: "Admin", OffsetDays: -5, Required: true, Notes: "" },
+  { JourneyType: "Onboarding", TemplateGroup: "Corporate Office Team Member", Phase: "Pre-Start", Title: "Order laptop / monitor + dock", AssigneeRole: "IT", OffsetDays: -7, Required: true, Notes: "" },
+  { JourneyType: "Onboarding", TemplateGroup: "Corporate Office Team Member", Phase: "Day 1",     Title: "Issue building access card + parking pass", AssigneeRole: "Admin", OffsetDays: 0, Required: true, Notes: "" },
+  { JourneyType: "Onboarding", TemplateGroup: "Corporate Office Team Member", Phase: "Day 1",     Title: "Office tour + amenities walkthrough", AssigneeRole: "Manager", OffsetDays: 0, Required: true, Notes: "" },
+  { JourneyType: "Onboarding", TemplateGroup: "Corporate Office Team Member", Phase: "Day 1",     Title: "Hand off equipment + login credentials", AssigneeRole: "IT", OffsetDays: 0, Required: true, Notes: "" },
+  { JourneyType: "Onboarding", TemplateGroup: "Corporate Office Team Member", Phase: "Week 1",    Title: "Set up role-specific app access (review per app)", AssigneeRole: "IT", OffsetDays: 1, Required: true, Notes: "" },
 
-  { JourneyType: "Offboarding", Phase: "Last Day", Title: "Collect equipment (laptop / phone / keys / badge)", AssigneeRole: "Manager", OffsetDays: 0, Required: true, Notes: "" },
-  { JourneyType: "Offboarding", Phase: "Last Day", Title: "Disable M365 account / revoke licenses", AssigneeRole: "IT", OffsetDays: 0, Required: true, Notes: "" },
-  { JourneyType: "Offboarding", Phase: "Last Day", Title: "Remove from AppFolio / property platforms", AssigneeRole: "IT", OffsetDays: 0, Required: true, Notes: "" },
-  { JourneyType: "Offboarding", Phase: "Last Day", Title: "Mark Employees list inactive", AssigneeRole: "HR", OffsetDays: 0, Required: true, Notes: "Set EmployeeActive=false." },
-  { JourneyType: "Offboarding", Phase: "Last Day", Title: "Set up email forwarding / auto-reply", AssigneeRole: "IT", OffsetDays: 0, Required: false, Notes: "" },
+  // ── OFFBOARDING — COMMON ──
+  { JourneyType: "Offboarding", TemplateGroup: "", Phase: "Notice",     Title: "Receive & acknowledge resignation / termination", AssigneeRole: "HR", OffsetDays: -14, Required: true, Notes: "Set EndDate on journey." },
+  { JourneyType: "Offboarding", TemplateGroup: "", Phase: "Notice",     Title: "Notify payroll & benefits", AssigneeRole: "HR", OffsetDays: -10, Required: true, Notes: "" },
+  { JourneyType: "Offboarding", TemplateGroup: "", Phase: "Notice",     Title: "Plan knowledge transfer & coverage", AssigneeRole: "Manager", OffsetDays: -10, Required: true, Notes: "" },
+  { JourneyType: "Offboarding", TemplateGroup: "", Phase: "Last Day",   Title: "Disable M365 account / revoke licenses", AssigneeRole: "IT", OffsetDays: 0, Required: true, Notes: "" },
+  { JourneyType: "Offboarding", TemplateGroup: "", Phase: "Last Day",   Title: "Remove from AppFolio / property platforms", AssigneeRole: "IT", OffsetDays: 0, Required: true, Notes: "" },
+  { JourneyType: "Offboarding", TemplateGroup: "", Phase: "Last Day",   Title: "Reset all per-app roles to None", AssigneeRole: "Admin", OffsetDays: 0, Required: true, Notes: "Use Employee Detail -> Permissions to zero out." },
+  { JourneyType: "Offboarding", TemplateGroup: "", Phase: "Last Day",   Title: "Mark Employees list inactive", AssigneeRole: "HR", OffsetDays: 0, Required: true, Notes: "Set EmployeeActive=false." },
+  { JourneyType: "Offboarding", TemplateGroup: "", Phase: "Last Day",   Title: "Set up email forwarding / auto-reply", AssigneeRole: "IT", OffsetDays: 0, Required: false, Notes: "" },
+  { JourneyType: "Offboarding", TemplateGroup: "", Phase: "Post-Exit",  Title: "Process final paycheck & PTO payout", AssigneeRole: "HR", OffsetDays: 3, Required: true, Notes: "" },
+  { JourneyType: "Offboarding", TemplateGroup: "", Phase: "Post-Exit",  Title: "Archive employee files & documents", AssigneeRole: "HR", OffsetDays: 7, Required: true, Notes: "" },
+  { JourneyType: "Offboarding", TemplateGroup: "", Phase: "Post-Exit",  Title: "Issue COBRA / benefits continuation notice", AssigneeRole: "HR", OffsetDays: 14, Required: false, Notes: "" },
 
-  { JourneyType: "Offboarding", Phase: "Post-Exit", Title: "Process final paycheck & PTO payout", AssigneeRole: "HR", OffsetDays: 3, Required: true, Notes: "" },
-  { JourneyType: "Offboarding", Phase: "Post-Exit", Title: "Archive employee files & documents", AssigneeRole: "HR", OffsetDays: 7, Required: true, Notes: "" },
-  { JourneyType: "Offboarding", Phase: "Post-Exit", Title: "Issue COBRA / benefits continuation notice", AssigneeRole: "HR", OffsetDays: 14, Required: false, Notes: "" },
+  // ── OFFBOARDING — Voluntary Resignation ──
+  { JourneyType: "Offboarding", TemplateGroup: "Voluntary Resignation", Phase: "Notice",     Title: "Acknowledge resignation in writing", AssigneeRole: "HR", OffsetDays: -13, Required: true, Notes: "" },
+  { JourneyType: "Offboarding", TemplateGroup: "Voluntary Resignation", Phase: "Notice",     Title: "Schedule exit interview", AssigneeRole: "HR", OffsetDays: -5, Required: true, Notes: "" },
+  { JourneyType: "Offboarding", TemplateGroup: "Voluntary Resignation", Phase: "Final Week", Title: "Documentation handoff to successor / team", AssigneeRole: "Employee", OffsetDays: -3, Required: true, Notes: "" },
+  { JourneyType: "Offboarding", TemplateGroup: "Voluntary Resignation", Phase: "Final Week", Title: "Exit interview conducted", AssigneeRole: "HR", OffsetDays: -1, Required: true, Notes: "" },
+  { JourneyType: "Offboarding", TemplateGroup: "Voluntary Resignation", Phase: "Final Week", Title: "Final timesheet / expense report submitted", AssigneeRole: "Employee", OffsetDays: -1, Required: true, Notes: "" },
+  { JourneyType: "Offboarding", TemplateGroup: "Voluntary Resignation", Phase: "Last Day",   Title: "Collect equipment (laptop / phone / keys / badge)", AssigneeRole: "Manager", OffsetDays: 0, Required: true, Notes: "" },
+  { JourneyType: "Offboarding", TemplateGroup: "Voluntary Resignation", Phase: "Last Day",   Title: "Farewell / team send-off (optional)", AssigneeRole: "Manager", OffsetDays: 0, Required: false, Notes: "" },
+
+  // ── OFFBOARDING — Involuntary Termination ──
+  { JourneyType: "Offboarding", TemplateGroup: "Involuntary Termination", Phase: "Notice",   Title: "Confirm termination decision with legal / leadership", AssigneeRole: "HR", OffsetDays: -1, Required: true, Notes: "Document the basis." },
+  { JourneyType: "Offboarding", TemplateGroup: "Involuntary Termination", Phase: "Notice",   Title: "Prepare termination letter & final pay package", AssigneeRole: "HR", OffsetDays: -1, Required: true, Notes: "" },
+  { JourneyType: "Offboarding", TemplateGroup: "Involuntary Termination", Phase: "Last Day", Title: "Termination conversation (with witness)", AssigneeRole: "HR", OffsetDays: 0, Required: true, Notes: "Have manager + HR present." },
+  { JourneyType: "Offboarding", TemplateGroup: "Involuntary Termination", Phase: "Last Day", Title: "Immediate revoke: badge, keys, codes, vehicle", AssigneeRole: "Admin", OffsetDays: 0, Required: true, Notes: "Do this BEFORE notifying employee if security risk." },
+  { JourneyType: "Offboarding", TemplateGroup: "Involuntary Termination", Phase: "Last Day", Title: "Immediate revoke: M365, AppFolio, all app roles", AssigneeRole: "IT", OffsetDays: 0, Required: true, Notes: "Run BEFORE the conversation if security risk." },
+  { JourneyType: "Offboarding", TemplateGroup: "Involuntary Termination", Phase: "Last Day", Title: "Escort to desk for personal items, then off premises", AssigneeRole: "Manager", OffsetDays: 0, Required: true, Notes: "" },
+  { JourneyType: "Offboarding", TemplateGroup: "Involuntary Termination", Phase: "Last Day", Title: "Collect equipment + property on the spot", AssigneeRole: "Manager", OffsetDays: 0, Required: true, Notes: "" },
+  { JourneyType: "Offboarding", TemplateGroup: "Involuntary Termination", Phase: "Post-Exit", Title: "Document file: reason, timeline, witnesses", AssigneeRole: "HR", OffsetDays: 1, Required: true, Notes: "Required if unemployment / wrongful term claim arises." },
+  { JourneyType: "Offboarding", TemplateGroup: "Involuntary Termination", Phase: "Post-Exit", Title: "Notify team of departure (no detail on reason)", AssigneeRole: "Manager", OffsetDays: 1, Required: true, Notes: "" },
 ];
 
 // ============================================================
@@ -553,6 +616,7 @@ function JourneyCard({ j, onClick }) {
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontWeight: 700, color: C.t7, fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{j.EmployeeName || j._emp?.Title || j.EmployeeEmail}</div>
           <div style={{ fontSize: 11, color: C.b4 }}>{j.JobTitle || j._emp?.JobTitle || ""}</div>
+          {j.TemplateGroup && <div style={{ marginTop: 4 }}><Badge type="pu">{j.TemplateGroup}</Badge></div>}
         </div>
       </div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
@@ -612,6 +676,8 @@ function JourneyDetailModal({ journeyId, onClose }) {
           <div style={{ color: C.b4, fontWeight: 600 }}>Email</div><div>{j.EmployeeEmail}</div>
           <div style={{ color: C.b4, fontWeight: 600 }}>Title</div><div>{j.JobTitle || emp?.JobTitle || "—"}</div>
           <div style={{ color: C.b4, fontWeight: 600 }}>Manager</div><div>{j.ManagerEmail || emp?.ManagerEmail || "—"}</div>
+          {j.TemplateGroup && <><div style={{ color: C.b4, fontWeight: 600 }}>Group</div><div><Badge type="pu">{j.TemplateGroup}</Badge></div></>}
+          {j.OffboardReason && <><div style={{ color: C.b4, fontWeight: 600 }}>Reason</div><div>{j.OffboardReason}</div></>}
           {j.Notes && <><div style={{ color: C.b4, fontWeight: 600 }}>Notes</div><div style={{ whiteSpace: "pre-wrap" }}>{j.Notes}</div></>}
         </div>
       </div>
@@ -695,6 +761,7 @@ function StartJourneyModal({ type, onClose }) {
     EmployeeEmail: "", EmployeeName: "", JobTitle: "", ManagerEmail: "",
     Department: "", StartDate: isOnboarding ? todayIso() : "", EndDate: !isOnboarding ? todayIso() : "",
     Notes: "", existingEmpId: "", OffboardReason: "",
+    TemplateGroup: (CONFIG.templateGroups[type] || [])[0] || "",
   });
   // Permission selections: { ColumnName: roleValue }
   const [perms, setPerms] = useState(() => {
@@ -705,9 +772,13 @@ function StartJourneyModal({ type, onClose }) {
   const [saving, setSaving] = useState(false);
   const [warn, setWarn] = useState("");
 
+  // Generation rule: include templates that are either common (no TemplateGroup)
+  // OR match the chosen group. Sorted chronologically.
   const usableTemplates = state.templates
     .filter(t => t.JourneyType === type && t.Active !== false)
+    .filter(t => !t.TemplateGroup || t.TemplateGroup === f.TemplateGroup)
     .sort((a, b) => (a.OffsetDays || 0) - (b.OffsetDays || 0) || (a.Title || "").localeCompare(b.Title || ""));
+  const availableGroups = getAvailableGroups(state, type);
 
   const onPickEmployee = (id) => {
     if (!id) { setF({ ...f, existingEmpId: "", EmployeeEmail: "", EmployeeName: "", JobTitle: "", ManagerEmail: "" }); return; }
@@ -763,6 +834,7 @@ function StartJourneyModal({ type, onClose }) {
         Status: "In Progress",
         Notes: f.Notes,
         OffboardReason: !isOnboarding ? f.OffboardReason : "",
+        TemplateGroup: f.TemplateGroup || "",
         CreatedBy: currentEmail,
       });
       // 3. Set permissions (onboarding) with audit log against the new journey
@@ -832,6 +904,19 @@ function StartJourneyModal({ type, onClose }) {
       {step === 1 && (
         <div style={{ display: "grid", gap: 12 }}>
           <div>
+            <label style={S.label}>{isOnboarding ? "Type of hire *" : "Type of departure *"}</label>
+            <select style={S.select} value={f.TemplateGroup} onChange={e => setF({ ...f, TemplateGroup: e.target.value })}>
+              {availableGroups.length === 0 && <option value="">(no groups defined — uses common tasks only)</option>}
+              {availableGroups.map(g => (<option key={g} value={g}>{g}</option>))}
+            </select>
+            <div style={{ fontSize: 11, color: C.b4, marginTop: 4 }}>
+              Determines which template group runs.{" "}
+              <strong>{usableTemplates.length}</strong> task{usableTemplates.length === 1 ? "" : "s"} will be generated
+              ({state.templates.filter(t => t.JourneyType === type && t.Active !== false && !t.TemplateGroup).length} common
+              + {state.templates.filter(t => t.JourneyType === type && t.Active !== false && t.TemplateGroup === f.TemplateGroup).length} group-specific).
+            </div>
+          </div>
+          <div>
             <label style={S.label}>{isOnboarding ? "Existing employee (rehire/transfer)" : "Select active employee *"}</label>
             <select style={S.select} value={f.existingEmpId} onChange={e => onPickEmployee(e.target.value)}>
               <option value="">{isOnboarding ? "— New hire —" : "— Pick an employee —"}</option>
@@ -895,7 +980,8 @@ function StartJourneyModal({ type, onClose }) {
           <div style={S.card}>
             <div style={S.sec}>New Hire</div>
             <div style={{ fontSize: 14, fontWeight: 700, color: C.t7 }}>{f.EmployeeName} <span style={{ fontWeight: 400, color: C.b4 }}>· {f.EmployeeEmail}</span></div>
-            <div style={{ fontSize: 12, color: C.b4 }}>{f.JobTitle || "—"}{f.Department ? ` · ${f.Department}` : ""} · Manager: {f.ManagerEmail || "—"} · Starts {fmtDate(f.StartDate)}</div>
+            <div style={{ fontSize: 12, color: C.b4, marginTop: 2 }}>{f.JobTitle || "—"}{f.Department ? ` · ${f.Department}` : ""} · Manager: {f.ManagerEmail || "—"} · Starts {fmtDate(f.StartDate)}</div>
+            <div style={{ marginTop: 6 }}><Badge type="pu">{f.TemplateGroup || "Common"}</Badge></div>
           </div>
           <div style={S.card}>
             <div style={S.sec}>App Permissions</div>
@@ -922,17 +1008,33 @@ function StartJourneyModal({ type, onClose }) {
 // ============================================================
 // TEMPLATES TAB
 // ============================================================
+// All groups that exist for a given JourneyType: predefined + any custom ones found in templates
+function getAvailableGroups(state, journeyType) {
+  const predefined = CONFIG.templateGroups[journeyType] || [];
+  const custom = uniq(state.templates.filter(t => t.JourneyType === journeyType && t.TemplateGroup).map(t => t.TemplateGroup));
+  return uniq([...predefined, ...custom]);
+}
+
 function TemplatesTab() {
   const { state, actions, role } = useData();
   const [seed, setSeed] = useState(false);
   const [editing, setEditing] = useState(null);
   const [filter, setFilter] = useState("Onboarding");
+  const [groupFilter, setGroupFilter] = useState("__all__"); // __all__, __common__, or group name
   const canEdit = role === "Admin" || role === "HR";
 
-  const visible = state.templates.filter(t => t.JourneyType === filter).sort((a, b) => (a.OffsetDays || 0) - (b.OffsetDays || 0) || (a.Title || "").localeCompare(b.Title || ""));
+  const groups = getAvailableGroups(state, filter);
+  const visible = state.templates
+    .filter(t => t.JourneyType === filter)
+    .filter(t => {
+      if (groupFilter === "__all__") return true;
+      if (groupFilter === "__common__") return !t.TemplateGroup;
+      return t.TemplateGroup === groupFilter;
+    })
+    .sort((a, b) => (a.OffsetDays || 0) - (b.OffsetDays || 0) || (a.Title || "").localeCompare(b.Title || ""));
 
   const seedDefaults = async () => {
-    if (!confirm(`Seed ${DEFAULT_TEMPLATES.length} default templates? This adds to existing templates, it does not replace them.`)) return;
+    if (!confirm(`Seed ${DEFAULT_TEMPLATES.length} default templates? This adds to existing templates; it does not replace them.`)) return;
     setSeed(true);
     try {
       for (const tpl of DEFAULT_TEMPLATES) {
@@ -942,32 +1044,55 @@ function TemplatesTab() {
     } catch (e) { alert("Seed failed: " + e.message); } finally { setSeed(false); }
   };
 
+  // Group counts for the filter dropdown
+  const groupCounts = useMemo(() => {
+    const m = { __all__: 0, __common__: 0 };
+    for (const g of groups) m[g] = 0;
+    for (const t of state.templates.filter(x => x.JourneyType === filter)) {
+      m.__all__++;
+      if (!t.TemplateGroup) m.__common__++;
+      else m[t.TemplateGroup] = (m[t.TemplateGroup] || 0) + 1;
+    }
+    return m;
+  }, [state.templates, filter, groups.join("|")]);
+
   return (
     <div>
       <div style={S.card}>
         <div style={S.cardT}>
-          <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
             <span>Task Templates</span>
-            <select style={{ ...S.select, width: "auto" }} value={filter} onChange={e => setFilter(e.target.value)}>
+            <select style={{ ...S.select, width: "auto" }} value={filter} onChange={e => { setFilter(e.target.value); setGroupFilter("__all__"); }}>
               <option>Onboarding</option><option>Offboarding</option>
+            </select>
+            <select style={{ ...S.select, width: "auto" }} value={groupFilter} onChange={e => setGroupFilter(e.target.value)}>
+              <option value="__all__">All groups ({groupCounts.__all__})</option>
+              <option value="__common__">Common (applies to every group) ({groupCounts.__common__ || 0})</option>
+              <optgroup label="Group-specific">
+                {groups.map(g => <option key={g} value={g}>{g} ({groupCounts[g] || 0})</option>)}
+              </optgroup>
             </select>
           </div>
           <div style={{ display: "flex", gap: 8 }}>
             {canEdit && state.templates.length === 0 && <button style={S.btnO(C.t5)} onClick={seedDefaults} disabled={seed}>{seed ? "Seeding…" : "Seed defaults"}</button>}
-            {canEdit && <button style={S.btn(C.hdr)} onClick={() => setEditing({ JourneyType: filter, Phase: "", Title: "", AssigneeRole: "HR", OffsetDays: 0, Required: true, Notes: "", Active: true })}>+ New Template</button>}
+            {canEdit && <button style={S.btn(C.hdr)} onClick={() => setEditing({ JourneyType: filter, TemplateGroup: groupFilter === "__all__" || groupFilter === "__common__" ? "" : groupFilter, Phase: "", Title: "", AssigneeRole: "HR", OffsetDays: 0, Required: true, Notes: "", Active: true })}>+ New Template</button>}
           </div>
         </div>
+        <div style={{ fontSize: 11, color: C.b4, marginBottom: 10 }}>
+          <strong>Common</strong> tasks apply to every group of this type. <strong>Group-specific</strong> tasks only generate when that group is chosen at journey start. So a "Maintenance" onboarding gets Common + Maintenance tasks, never On-Site or VA tasks.
+        </div>
         {visible.length === 0 ? (
-          <Empty title={`No ${filter} templates yet`} sub={canEdit ? "Click 'Seed defaults' to load NewShire's starter set, or '+ New Template' to add your own." : "Ask HR/Admin to set this up."} />
+          <Empty title={`No ${filter} templates in this view`} sub={canEdit ? "Click 'Seed defaults' to load NewShire's starter set, or '+ New Template' to add your own." : "Ask HR/Admin to set this up."} />
         ) : (
           <div style={{ overflowX: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
               <thead><tr>
-                <th style={S.th}>Phase</th><th style={S.th}>Title</th><th style={S.th}>Assignee</th><th style={S.th}>Offset</th><th style={S.th}>Required</th><th style={S.th}></th>
+                <th style={S.th}>Group</th><th style={S.th}>Phase</th><th style={S.th}>Title</th><th style={S.th}>Assignee</th><th style={S.th}>Offset</th><th style={S.th}>Required</th><th style={S.th}></th>
               </tr></thead>
               <tbody>
                 {visible.map(t => (
                   <tr key={t.id}>
+                    <td style={S.td}>{t.TemplateGroup ? <Badge type="pu">{t.TemplateGroup}</Badge> : <Badge type="neutral">Common</Badge>}</td>
                     <td style={S.td}><Badge type="neutral">{t.Phase || "—"}</Badge></td>
                     <td style={S.td}><div style={{ fontWeight: 600, color: C.t7 }}>{t.Title}</div>{t.Notes && <div style={{ fontSize: 11, color: C.b4 }}>{t.Notes}</div>}</td>
                     <td style={S.td}>{t.AssigneeRole}</td>
@@ -987,10 +1112,12 @@ function TemplatesTab() {
 }
 
 function TemplateEditModal({ tpl, onClose }) {
-  const { actions } = useData();
+  const { state, actions } = useData();
   const isNew = !tpl.id;
-  const [f, setF] = useState({ JourneyType: tpl.JourneyType, Phase: tpl.Phase || "", Title: tpl.Title || "", AssigneeRole: tpl.AssigneeRole || "HR", OffsetDays: tpl.OffsetDays ?? 0, Required: tpl.Required !== false, Notes: tpl.Notes || "", Active: tpl.Active !== false });
+  const [f, setF] = useState({ JourneyType: tpl.JourneyType, TemplateGroup: tpl.TemplateGroup || "", Phase: tpl.Phase || "", Title: tpl.Title || "", AssigneeRole: tpl.AssigneeRole || "HR", OffsetDays: tpl.OffsetDays ?? 0, Required: tpl.Required !== false, Notes: tpl.Notes || "", Active: tpl.Active !== false });
   const [saving, setSaving] = useState(false);
+  const groupSuggestions = getAvailableGroups(state, f.JourneyType);
+  const datalistId = `tpl-groups-${f.JourneyType}`;
   const save = async () => {
     if (!f.Title) return alert("Title is required.");
     setSaving(true);
@@ -1017,11 +1144,16 @@ function TemplateEditModal({ tpl, onClose }) {
       <div style={{ display: "grid", gap: 12 }}>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
           <div><label style={S.label}>Journey Type</label><select style={S.select} value={f.JourneyType} onChange={e => setF({ ...f, JourneyType: e.target.value })}><option>Onboarding</option><option>Offboarding</option></select></div>
-          <div><label style={S.label}>Phase</label><input style={S.input} value={f.Phase} placeholder="Pre-Start, Day 1, Week 1, 30-Day, …" onChange={e => setF({ ...f, Phase: e.target.value })} /></div>
+          <div>
+            <label style={S.label}>Group</label>
+            <input style={S.input} list={datalistId} value={f.TemplateGroup} placeholder="(blank = Common — applies to every group)" onChange={e => setF({ ...f, TemplateGroup: e.target.value })} />
+            <datalist id={datalistId}>{groupSuggestions.map(g => <option key={g} value={g} />)}</datalist>
+          </div>
         </div>
         <div><label style={S.label}>Title</label><input style={S.input} value={f.Title} onChange={e => setF({ ...f, Title: e.target.value })} /></div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
-          <div><label style={S.label}>Assignee Role</label><select style={S.select} value={f.AssigneeRole} onChange={e => setF({ ...f, AssigneeRole: e.target.value })}><option>HR</option><option>IT</option><option>Manager</option><option>Employee</option><option>Admin</option></select></div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10 }}>
+          <div><label style={S.label}>Phase</label><input style={S.input} value={f.Phase} placeholder="Day 1, Week 1, …" onChange={e => setF({ ...f, Phase: e.target.value })} /></div>
+          <div><label style={S.label}>Assignee Role</label><select style={S.select} value={f.AssigneeRole} onChange={e => setF({ ...f, AssigneeRole: e.target.value })}><option>HR</option><option>IT</option><option>Manager</option><option>Employee</option><option>Admin</option><option>Accounting</option></select></div>
           <div><label style={S.label}>Offset Days</label><input style={S.input} type="number" value={f.OffsetDays} onChange={e => setF({ ...f, OffsetDays: parseInt(e.target.value) || 0 })} /></div>
           <div style={{ alignSelf: "end" }}>
             <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, paddingTop: 8 }}><input type="checkbox" checked={f.Required} onChange={e => setF({ ...f, Required: e.target.checked })} /> Required</label>
@@ -1030,7 +1162,8 @@ function TemplateEditModal({ tpl, onClose }) {
         </div>
         <div><label style={S.label}>Notes</label><textarea style={S.textarea} value={f.Notes} onChange={e => setF({ ...f, Notes: e.target.value })} /></div>
         <div style={{ fontSize: 11, color: C.b4 }}>
-          Offset is days from the anchor date: positive = after start (onboarding) or after last day (offboarding); negative = before. E.g. <code style={{ fontFamily: mono }}>-7</code> on onboarding = 7 days before start date.
+          <strong>Group</strong> controls which onboarding/offboarding flows this task appears in. Blank = applies to every group of this type. Type a new name to create a new group.<br />
+          <strong>Offset</strong> is days from the anchor: positive = after start (onboarding) or after last day (offboarding); negative = before. E.g. <code style={{ fontFamily: mono }}>-7</code> = 7 days before.
         </div>
       </div>
     </Modal>

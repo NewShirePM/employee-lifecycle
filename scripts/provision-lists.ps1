@@ -207,11 +207,13 @@ $ELC_Journeys = Ensure-List -Name 'ELC_Journeys' -Description 'One row per onboa
     (ColMultiText 'Notes')
     (ColText      'CreatedBy')
     (ColText      'OffboardReason')
+    (ColText      'TemplateGroup')
 )
 
 Write-Step "Provisioning ELC_TemplateTasks"
 $ELC_TemplateTasks = Ensure-List -Name 'ELC_TemplateTasks' -Description 'Reusable task templates for onboarding/offboarding flows' -Columns @(
     (ColChoice    'JourneyType' @('Onboarding','Offboarding') 'Onboarding')
+    (ColText      'TemplateGroup')
     (ColText      'Phase')
     (ColChoice    'AssigneeRole' @('HR','IT','Manager','Employee','Admin','Accounting') 'HR')
     (ColNumber    'OffsetDays')

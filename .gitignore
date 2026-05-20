@@ -1,0 +1,12 @@
+# Excel temp lock files
+~$*.xlsx
+~$*.xls
+~$*.docx
+
+# Local OS junk
+Thumbs.db
+.DS_Store
+
+# Local secrets (if any are ever added)
+.env
+.env.local

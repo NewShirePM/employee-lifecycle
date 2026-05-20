@@ -1,0 +1,1156 @@
+const { useState, useEffect, useCallback, useRef, useMemo, createContext, useContext } = React;
+
+// ── FAVICON ──
+(() => { const l = document.querySelector("link[rel='icon']") || document.createElement("link"); l.rel = "icon"; l.href = "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%23CDA04B'/><text x='16' y='23' font-family='Georgia,serif' font-size='22' font-weight='bold' fill='%2328434C' text-anchor='middle'>L</text></svg>"; document.head.appendChild(l); })();
+
+// ============================================================
+// CONFIG
+// ============================================================
+const CONFIG = {
+  clientId: "32e75ffa-747a-4cf0-8209-6a19150c4547",
+  tenantId: "33575d04-ca7b-4396-8011-9eaea4030b46",
+  siteId: "vanrockre.sharepoint.com,a02c1cd8-9f1f-4827-8286-7b6b7ce74232,01202419-6625-4499-b0d5-8ceb1cffdba3",
+  appName: "EMPLOYEE LIFECYCLE",
+  version: "0.1.0",
+  lists: {
+    employees:           "Employees",            // shared, read-only here
+    journeys:            "ELC_Journeys",         // one row per onboarding/offboarding instance
+    templateTasks:       "ELC_TemplateTasks",    // task templates by phase/role
+    journeyTasks:        "ELC_JourneyTasks",     // per-journey task rows
+    config:              "ELC_Config",           // single-row config (ConfigJSON)
+  },
+  adminEmails: ["bturner@newshirepm.com"],
+};
+
+const GRAPH = "https://graph.microsoft.com/v1.0";
+const SITE = `${GRAPH}/sites/${CONFIG.siteId}`;
+const SCOPES = ["Sites.ReadWrite.All", "User.Read", "Mail.Send"];
+
+// ============================================================
+// PALETTE — NewShire light theme
+// ============================================================
+const C = {
+  hdr: "#1C3740", hdrH: "#213F4A",
+  t7: "#28434C", t6: "#2F5260", t5: "#3A6577", t4: "#4A7E91", t3: "#6FA0B0", t1: "#D6E7EC", t0: "#EDF4F7",
+  g7: "#9E7B2F", g6: "#B8922E", g5: "#CDA04B", g4: "#D4AF61", g1: "#F8F0DB", g0: "#FFFBF0",
+  wh: "#FFFFFF", pg: "#F7F8F7",
+  b1: "#E8EAEA", b2: "#D0D8DC", b3: "#A8B0B0", b4: "#7A8585", b6: "#3E4A4A",
+  ok: "#2D8A5A", okb: "rgba(45,138,90,0.08)",
+  er: "#C44B3B", erb: "rgba(196,75,59,0.06)",
+  wn: "#D4960A", wnb: "rgba(212,150,10,0.08)",
+  inf: "#4A78B0", infb: "rgba(74,120,176,0.08)",
+  pu: "#5B3FA8", pub: "rgba(91,63,168,0.08)",
+};
+const font = "'Source Sans 3','Segoe UI',sans-serif";
+const mono = "'Source Code Pro',Consolas,monospace";
+
+// ============================================================
+// STYLES
+// ============================================================
+const S = {
+  page: { fontFamily: font, background: C.pg, minHeight: "100vh", color: C.t7 },
+  hdr: { background: C.hdr, borderBottom: `2.5px solid ${C.g5}`, padding: "0 20px", display: "flex", alignItems: "center", justifyContent: "space-between", minHeight: 56, position: "sticky", top: 0, zIndex: 100 },
+  hdrL: { display: "flex", alignItems: "center", gap: 12 },
+  logo: { width: 32, height: 32, background: C.g5, borderRadius: 6, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, fontWeight: 700, color: C.t7, fontFamily: "Georgia,serif" },
+  hdrTitle: { color: "#fff", fontSize: 15, fontWeight: 700, letterSpacing: ".08em" },
+  hdrSub: { color: C.g4, fontSize: 10, letterSpacing: ".1em", textTransform: "uppercase" },
+  hdrUser: { color: C.t1, fontSize: 13, fontWeight: 600 },
+  hdrRole: { fontSize: 10, color: C.g4, textTransform: "uppercase", letterSpacing: ".07em" },
+  tabBar: { background: C.wh, borderBottom: `1px solid ${C.b2}`, display: "flex", padding: "0 16px", overflowX: "auto", WebkitOverflowScrolling: "touch", position: "sticky", top: 56, zIndex: 90 },
+  tab: a => ({ padding: "11px 15px", fontSize: 13, fontWeight: a ? 600 : 400, color: a ? C.t7 : C.b4, borderBottom: `2.5px solid ${a ? C.g5 : "transparent"}`, cursor: "pointer", whiteSpace: "nowrap", background: "none", border: "none", borderTop: "none", borderLeft: "none", borderRight: "none", fontFamily: font, minHeight: 44 }),
+  content: { maxWidth: 1240, margin: "0 auto", padding: "20px 18px 60px" },
+  card: { background: C.wh, border: `1px solid ${C.b2}`, borderRadius: 6, boxShadow: "0 1px 3px rgba(28,55,64,.06)", padding: 16, marginBottom: 14 },
+  cardT: { fontSize: 15, fontWeight: 600, color: C.t7, paddingBottom: 10, borderBottom: `1px solid ${C.b1}`, marginBottom: 12, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 },
+  cardS: { fontSize: 12, color: C.b4 },
+  sec: { fontSize: 10, fontWeight: 700, color: C.b4, textTransform: "uppercase", letterSpacing: ".08em", marginBottom: 8 },
+  label: { display: "block", fontSize: 12, fontWeight: 600, color: C.t7, marginBottom: 4 },
+  input: { width: "100%", padding: "8px 10px", fontSize: 13, fontFamily: font, color: C.t7, background: C.wh, border: `1px solid ${C.b2}`, borderRadius: 4, outline: "none", boxSizing: "border-box" },
+  select: { width: "100%", padding: "8px 10px", fontSize: 13, fontFamily: font, color: C.t7, background: C.wh, border: `1px solid ${C.b2}`, borderRadius: 4, cursor: "pointer", boxSizing: "border-box" },
+  textarea: { width: "100%", padding: "8px 10px", fontSize: 13, fontFamily: font, color: C.t7, background: C.wh, border: `1px solid ${C.b2}`, borderRadius: 4, outline: "none", boxSizing: "border-box", resize: "vertical", minHeight: 64 },
+  btn: (bg, fg) => ({ display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "8px 14px", fontSize: 12, fontWeight: 600, fontFamily: font, color: fg || "#fff", background: bg || C.hdr, border: "none", borderRadius: 4, cursor: "pointer", minHeight: 38, whiteSpace: "nowrap" }),
+  btnO: (fg, bdr) => ({ display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "8px 14px", fontSize: 12, fontWeight: 600, fontFamily: font, color: fg || C.t7, background: C.wh, border: `1px solid ${bdr || C.b2}`, borderRadius: 4, cursor: "pointer", minHeight: 38, whiteSpace: "nowrap" }),
+  xs: { padding: "4px 10px", fontSize: 11, minHeight: 28 },
+  sm: { padding: "6px 12px", fontSize: 12, minHeight: 32 },
+  th: { textAlign: "left", padding: "9px 11px", fontSize: 11, fontWeight: 700, color: C.t7, background: C.t0, borderBottom: `2px solid ${C.t1}`, whiteSpace: "nowrap" },
+  td: { padding: "9px 11px", fontSize: 13, color: C.b6, borderBottom: `1px solid ${C.b1}`, verticalAlign: "top" },
+  kpi: { background: C.wh, border: `1px solid ${C.b2}`, borderRadius: 6, padding: "12px 14px", flex: "1 1 130px", minWidth: 120 },
+  kpiL: { fontSize: 10, fontWeight: 700, color: C.b4, textTransform: "uppercase", letterSpacing: ".07em" },
+  kpiV: { fontSize: 26, fontWeight: 700, fontFamily: mono, color: C.t7, lineHeight: 1.1, marginTop: 4 },
+  modalBg: { position: "fixed", inset: 0, background: "rgba(28,55,64,.45)", display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "60px 16px 20px", zIndex: 1000, overflowY: "auto" },
+  modal: { background: C.wh, borderRadius: 8, maxWidth: 720, width: "100%", boxShadow: "0 10px 40px rgba(28,55,64,.25)", overflow: "hidden" },
+  modalH: { padding: "14px 18px", borderBottom: `1px solid ${C.b1}`, display: "flex", alignItems: "center", justifyContent: "space-between", background: C.t0 },
+  modalB: { padding: 18 },
+  modalF: { padding: "12px 18px", borderTop: `1px solid ${C.b1}`, display: "flex", justifyContent: "flex-end", gap: 8, background: C.pg },
+};
+
+// ============================================================
+// HELPERS
+// ============================================================
+function todayIso() { return new Date().toISOString().slice(0, 10); }
+function addDays(iso, n) { const d = new Date(iso + "T00:00:00"); d.setDate(d.getDate() + (Number(n) || 0)); return d.toISOString().slice(0, 10); }
+function fmtDate(iso) { if (!iso) return "—"; return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }); }
+function daysFromNow(iso) { if (!iso) return null; return Math.floor((new Date(iso).getTime() - Date.now()) / 86400000); }
+function initials(name) { if (!name) return "?"; const p = name.trim().split(/\s+/); return p.length > 1 ? (p[0][0] + p[p.length - 1][0]).toUpperCase() : name.slice(0, 2).toUpperCase(); }
+function classifyDue(due, status) { if (status === "Done") return "done"; if (!due) return "none"; const d = daysFromNow(due); if (d == null) return "none"; if (d < 0) return "overdue"; if (d <= 3) return "soon"; return "ok"; }
+function uniq(arr) { return Array.from(new Set(arr.filter(Boolean))); }
+
+// ============================================================
+// GRAPH API
+// ============================================================
+const lUrl = n => `${SITE}/lists/${encodeURIComponent(n)}/items`;
+const iUrl = (n, id) => `${SITE}/lists/${encodeURIComponent(n)}/items/${id}/fields`;
+
+async function gGet(token, url) {
+  const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  if (!r.ok) throw new Error(`GET ${r.status} ${url.split('/').slice(-2).join('/')}`);
+  return r.json();
+}
+async function gAll(token, url) {
+  let out = [], next = url;
+  while (next) {
+    const d = await gGet(token, next);
+    out = out.concat(d.value || []);
+    next = d["@odata.nextLink"] || null;
+  }
+  return out;
+}
+async function gPost(token, url, fields) {
+  const r = await fetch(url, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ fields }),
+  });
+  if (!r.ok) throw new Error(`POST ${r.status} ${await r.text().catch(() => '')}`);
+  return r.json();
+}
+async function gPatch(token, url, fields) {
+  const r = await fetch(url, {
+    method: "PATCH",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify(fields),
+  });
+  if (!r.ok) throw new Error(`PATCH ${r.status}`);
+  return r.json();
+}
+async function gDelete(token, url) {
+  const r = await fetch(url, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } });
+  if (!r.ok && r.status !== 204) throw new Error(`DELETE ${r.status}`);
+}
+async function sendEmail(token, to, subject, body) {
+  try {
+    await fetch("https://graph.microsoft.com/v1.0/me/sendMail", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        message: { subject, body: { contentType: "HTML", content: body }, toRecipients: [{ emailAddress: { address: to } }] },
+        saveToSentItems: false,
+      }),
+    });
+  } catch (e) { console.warn("[ELC] sendEmail failed:", e.message); }
+}
+
+async function safeGet(token, name, url) { try { return await gAll(token, url); } catch (e) { console.warn(`[ELC] ${name} load failed:`, e.message); return []; } }
+
+// ============================================================
+// MSAL HOOK
+// ============================================================
+function useMsal() {
+  const [inst, setInst] = useState(null);
+  const [acct, setAcct] = useState(null);
+  const [token, setToken] = useState(null);
+  const [err, setErr] = useState(null);
+  const [ready, setReady] = useState(false);
+
+  useEffect(() => {
+    const init = async () => {
+      try {
+        if (!window.msal) await new Promise((res, rej) => {
+          const existing = document.querySelector("script[src*='msal-browser']");
+          if (existing) { existing.addEventListener('load', res); existing.addEventListener('error', () => rej(new Error('MSAL load failed'))); setTimeout(() => window.msal ? res() : null, 500); }
+          else {
+            const s = document.createElement("script");
+            s.src = "https://unpkg.com/@azure/msal-browser@2.38.3/lib/msal-browser.min.js";
+            s.onload = res; s.onerror = () => rej(new Error("MSAL load failed"));
+            document.head.appendChild(s);
+          }
+        });
+        const i = new window.msal.PublicClientApplication({
+          auth: { clientId: CONFIG.clientId, authority: `https://login.microsoftonline.com/${CONFIG.tenantId}`, redirectUri: window.location.origin + window.location.pathname },
+          cache: { cacheLocation: "sessionStorage" },
+        });
+        await i.initialize();
+        try { const rr = await i.handleRedirectPromise(); if (rr) setAcct(rr.account); } catch (e) { /* ignore */ }
+        setInst(i);
+        const accounts = i.getAllAccounts();
+        if (accounts.length > 0) {
+          setAcct(accounts[0]);
+          try { const r = await i.acquireTokenSilent({ scopes: SCOPES, account: accounts[0] }); setToken(r.accessToken); } catch (e) { /* user will need to click sign in */ }
+        }
+        setReady(true);
+      } catch (e) { setErr(e.message); setReady(true); }
+    };
+    init();
+  }, []);
+
+  const login = useCallback(async () => {
+    if (!inst) return;
+    try {
+      const r = await inst.loginPopup({ scopes: SCOPES });
+      setAcct(r.account);
+      const t = await inst.acquireTokenSilent({ scopes: SCOPES, account: r.account });
+      setToken(t.accessToken); setErr(null);
+    } catch (e) {
+      if (e.errorCode === "user_cancelled") return;
+      if (e.errorCode === "popup_window_error" || e.errorCode === "empty_window_error") {
+        try { await inst.loginRedirect({ scopes: SCOPES }); } catch (e2) { setErr(e2.message); }
+        return;
+      }
+      setErr(e.message);
+    }
+  }, [inst]);
+
+  const refresh = useCallback(async () => {
+    if (!inst || !acct) return null;
+    try { const r = await inst.acquireTokenSilent({ scopes: SCOPES, account: acct }); setToken(r.accessToken); return r.accessToken; }
+    catch { try { const r = await inst.acquireTokenPopup({ scopes: SCOPES }); setToken(r.accessToken); return r.accessToken; } catch (e) { setErr(e.message); return null; } }
+  }, [inst, acct]);
+
+  const logout = useCallback(() => { if (!inst) return; inst.logoutPopup().catch(() => {}); setAcct(null); setToken(null); }, [inst]);
+
+  return { acct, token, login, logout, refresh, err, ready };
+}
+
+// ============================================================
+// DEFAULT TEMPLATE TASKS — seed when ELC_TemplateTasks is empty
+// ============================================================
+const DEFAULT_TEMPLATES = [
+  // ── ONBOARDING ──
+  { JourneyType: "Onboarding", Phase: "Pre-Start", Title: "Send offer letter & collect signature", AssigneeRole: "HR", OffsetDays: -10, Required: true, Notes: "" },
+  { JourneyType: "Onboarding", Phase: "Pre-Start", Title: "Background check & I-9 verification", AssigneeRole: "HR", OffsetDays: -7, Required: true, Notes: "" },
+  { JourneyType: "Onboarding", Phase: "Pre-Start", Title: "Create M365 account & assign license", AssigneeRole: "IT", OffsetDays: -3, Required: true, Notes: "" },
+  { JourneyType: "Onboarding", Phase: "Pre-Start", Title: "Provision AppFolio user", AssigneeRole: "IT", OffsetDays: -3, Required: false, Notes: "Skip for VAs and back-office only roles." },
+  { JourneyType: "Onboarding", Phase: "Pre-Start", Title: "Order equipment (laptop / monitor / phone)", AssigneeRole: "IT", OffsetDays: -7, Required: false, Notes: "" },
+  { JourneyType: "Onboarding", Phase: "Pre-Start", Title: "Add to Employees SharePoint list", AssigneeRole: "HR", OffsetDays: -2, Required: true, Notes: "Title, Email, JobTitle, ManagerEmail." },
+
+  { JourneyType: "Onboarding", Phase: "Day 1", Title: "Welcome & office tour / virtual orientation", AssigneeRole: "Manager", OffsetDays: 0, Required: true, Notes: "" },
+  { JourneyType: "Onboarding", Phase: "Day 1", Title: "Hand off equipment + login credentials", AssigneeRole: "IT", OffsetDays: 0, Required: true, Notes: "" },
+  { JourneyType: "Onboarding", Phase: "Day 1", Title: "Sign employee handbook & policies", AssigneeRole: "Employee", OffsetDays: 0, Required: true, Notes: "" },
+  { JourneyType: "Onboarding", Phase: "Day 1", Title: "Set up direct deposit & W-4", AssigneeRole: "Employee", OffsetDays: 0, Required: true, Notes: "" },
+  { JourneyType: "Onboarding", Phase: "Day 1", Title: "Introduce to team & key contacts", AssigneeRole: "Manager", OffsetDays: 0, Required: true, Notes: "" },
+
+  { JourneyType: "Onboarding", Phase: "Week 1", Title: "Enroll in NewShire University intro path", AssigneeRole: "Manager", OffsetDays: 1, Required: true, Notes: "Assign role-appropriate learning path." },
+  { JourneyType: "Onboarding", Phase: "Week 1", Title: "Review role expectations & 30/60/90 plan", AssigneeRole: "Manager", OffsetDays: 2, Required: true, Notes: "" },
+  { JourneyType: "Onboarding", Phase: "Week 1", Title: "Shadow current team members", AssigneeRole: "Employee", OffsetDays: 3, Required: false, Notes: "" },
+  { JourneyType: "Onboarding", Phase: "Week 1", Title: "Set up benefits enrollment", AssigneeRole: "HR", OffsetDays: 5, Required: true, Notes: "" },
+
+  { JourneyType: "Onboarding", Phase: "30-Day", Title: "30-day check-in with manager", AssigneeRole: "Manager", OffsetDays: 30, Required: true, Notes: "" },
+  { JourneyType: "Onboarding", Phase: "30-Day", Title: "Confirm required trainings complete", AssigneeRole: "HR", OffsetDays: 30, Required: true, Notes: "" },
+  { JourneyType: "Onboarding", Phase: "90-Day", Title: "90-day performance review", AssigneeRole: "Manager", OffsetDays: 90, Required: true, Notes: "" },
+  { JourneyType: "Onboarding", Phase: "90-Day", Title: "Confirm probation passed / next steps", AssigneeRole: "HR", OffsetDays: 90, Required: true, Notes: "" },
+
+  // ── OFFBOARDING ──
+  { JourneyType: "Offboarding", Phase: "Notice", Title: "Receive & acknowledge resignation / termination", AssigneeRole: "HR", OffsetDays: -14, Required: true, Notes: "Set EndDate on journey." },
+  { JourneyType: "Offboarding", Phase: "Notice", Title: "Notify payroll & benefits", AssigneeRole: "HR", OffsetDays: -10, Required: true, Notes: "" },
+  { JourneyType: "Offboarding", Phase: "Notice", Title: "Plan knowledge transfer & coverage", AssigneeRole: "Manager", OffsetDays: -10, Required: true, Notes: "" },
+  { JourneyType: "Offboarding", Phase: "Notice", Title: "Schedule exit interview", AssigneeRole: "HR", OffsetDays: -5, Required: true, Notes: "" },
+
+  { JourneyType: "Offboarding", Phase: "Final Week", Title: "Complete documentation handoff", AssigneeRole: "Employee", OffsetDays: -3, Required: true, Notes: "" },
+  { JourneyType: "Offboarding", Phase: "Final Week", Title: "Exit interview", AssigneeRole: "HR", OffsetDays: -1, Required: true, Notes: "" },
+  { JourneyType: "Offboarding", Phase: "Final Week", Title: "Final timesheet / expense report submitted", AssigneeRole: "Employee", OffsetDays: -1, Required: true, Notes: "" },
+
+  { JourneyType: "Offboarding", Phase: "Last Day", Title: "Collect equipment (laptop / phone / keys / badge)", AssigneeRole: "Manager", OffsetDays: 0, Required: true, Notes: "" },
+  { JourneyType: "Offboarding", Phase: "Last Day", Title: "Disable M365 account / revoke licenses", AssigneeRole: "IT", OffsetDays: 0, Required: true, Notes: "" },
+  { JourneyType: "Offboarding", Phase: "Last Day", Title: "Remove from AppFolio / property platforms", AssigneeRole: "IT", OffsetDays: 0, Required: true, Notes: "" },
+  { JourneyType: "Offboarding", Phase: "Last Day", Title: "Mark Employees list inactive", AssigneeRole: "HR", OffsetDays: 0, Required: true, Notes: "Set EmployeeActive=false." },
+  { JourneyType: "Offboarding", Phase: "Last Day", Title: "Set up email forwarding / auto-reply", AssigneeRole: "IT", OffsetDays: 0, Required: false, Notes: "" },
+
+  { JourneyType: "Offboarding", Phase: "Post-Exit", Title: "Process final paycheck & PTO payout", AssigneeRole: "HR", OffsetDays: 3, Required: true, Notes: "" },
+  { JourneyType: "Offboarding", Phase: "Post-Exit", Title: "Archive employee files & documents", AssigneeRole: "HR", OffsetDays: 7, Required: true, Notes: "" },
+  { JourneyType: "Offboarding", Phase: "Post-Exit", Title: "Issue COBRA / benefits continuation notice", AssigneeRole: "HR", OffsetDays: 14, Required: false, Notes: "" },
+];
+
+// ============================================================
+// DATA CONTEXT
+// ============================================================
+const DataCtx = createContext(null);
+const useData = () => useContext(DataCtx);
+
+// ============================================================
+// LOADER
+// ============================================================
+async function loadAll(token) {
+  const [emp, jrn, tpl, jt, cfg] = await Promise.all([
+    safeGet(token, "Employees",      `${lUrl(CONFIG.lists.employees)}?expand=fields&$top=500`),
+    safeGet(token, "Journeys",       `${lUrl(CONFIG.lists.journeys)}?expand=fields&$top=500`),
+    safeGet(token, "TemplateTasks",  `${lUrl(CONFIG.lists.templateTasks)}?expand=fields&$top=500`),
+    safeGet(token, "JourneyTasks",   `${lUrl(CONFIG.lists.journeyTasks)}?expand=fields&$top=2000`),
+    safeGet(token, "Config",         `${lUrl(CONFIG.lists.config)}?expand=fields&$top=5`),
+  ]);
+  const employees = emp.map(e => ({ id: e.id, ...e.fields })).filter(e => e.EmployeeActive !== false || true /* keep all for offboarding lookups */);
+  const journeys = jrn.map(j => ({ id: j.id, ...j.fields }));
+  const templates = tpl.map(t => ({ id: t.id, ...t.fields }));
+  const journeyTasks = jt.map(t => ({ id: t.id, ...t.fields }));
+  const config = cfg.length > 0 ? (() => { try { return JSON.parse(cfg[0].fields.ConfigJSON || "{}"); } catch { return {}; } })() : {};
+  return { employees, journeys, templates, journeyTasks, config };
+}
+
+// ============================================================
+// SMALL COMPONENTS
+// ============================================================
+function Avatar({ name, size = 30, color }) {
+  const palette = [
+    { bg: C.t0, fg: C.t7 }, { bg: C.g1, fg: C.g6 }, { bg: C.erb, fg: C.er },
+    { bg: C.pub, fg: C.pu }, { bg: C.okb, fg: C.ok }, { bg: C.infb, fg: C.inf },
+  ];
+  const idx = name ? (name.charCodeAt(0) + (name.charCodeAt(1) || 0)) % palette.length : 0;
+  const c = color || palette[idx];
+  return <div style={{ width: size, height: size, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: size * 0.34, background: c.bg, color: c.fg, flexShrink: 0 }}>{initials(name)}</div>;
+}
+function Badge({ type = "neutral", children, dot = true }) {
+  const m = { ok: { c: C.ok, b: C.okb }, er: { c: C.er, b: C.erb }, wn: { c: C.wn, b: C.wnb }, inf: { c: C.inf, b: C.infb }, pu: { c: C.pu, b: C.pub }, neutral: { c: C.b4, b: C.b1 } }[type] || { c: C.b4, b: C.b1 };
+  return <span style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 9px", fontSize: 11, fontWeight: 600, borderRadius: 99, color: m.c, background: m.b, whiteSpace: "nowrap" }}>{dot && <span style={{ width: 5, height: 5, borderRadius: "50%", background: "currentColor" }} />}{children}</span>;
+}
+function ProgressBar({ value, max = 100, color = C.g5, height = 6 }) {
+  const pct = Math.min(100, Math.round((value / Math.max(1, max)) * 100));
+  return (
+    <div style={{ width: "100%", background: C.b1, borderRadius: 99, height, overflow: "hidden" }}>
+      <div style={{ width: `${pct}%`, height: "100%", background: color, borderRadius: 99, transition: "width .25s" }} />
+    </div>
+  );
+}
+function Modal({ title, onClose, children, footer, width }) {
+  useEffect(() => { const h = e => e.key === "Escape" && onClose(); window.addEventListener("keydown", h); return () => window.removeEventListener("keydown", h); }, [onClose]);
+  return (
+    <div style={S.modalBg} onClick={onClose}>
+      <div style={{ ...S.modal, maxWidth: width || S.modal.maxWidth }} onClick={e => e.stopPropagation()}>
+        <div style={S.modalH}>
+          <div style={{ fontSize: 14, fontWeight: 700 }}>{title}</div>
+          <button onClick={onClose} style={{ background: "none", border: "none", fontSize: 22, color: C.b4, cursor: "pointer", lineHeight: 1 }}>×</button>
+        </div>
+        <div style={S.modalB}>{children}</div>
+        {footer && <div style={S.modalF}>{footer}</div>}
+      </div>
+    </div>
+  );
+}
+function Empty({ title, sub }) { return <div style={{ textAlign: "center", padding: "40px 16px", color: C.b4 }}><div style={{ fontSize: 14, fontWeight: 600, color: C.t7, marginBottom: 4 }}>{title}</div><div style={{ fontSize: 12 }}>{sub}</div></div>; }
+
+// ============================================================
+// ROLE DETECTION
+// ============================================================
+function detectRole(emp, email) {
+  if (CONFIG.adminEmails.includes((email || "").toLowerCase())) return "Admin";
+  if (!emp) return "Employee";
+  const al = (emp.AccessLevel || "").toLowerCase();
+  if (al.includes("admin") || al.includes("owner")) return "Admin";
+  const title = (emp.JobTitle || "").toLowerCase();
+  if (title.includes("hr") || al.includes("hr")) return "HR";
+  if (title.includes("it") || al.includes("it")) return "IT";
+  if (title.includes("manager") || title.includes("regional") || title.includes("owner")) return "Manager";
+  return "Employee";
+}
+
+// ============================================================
+// LOGIN SCREEN
+// ============================================================
+function LoginScreen({ onLogin, err }) {
+  return (
+    <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: `linear-gradient(135deg, ${C.hdr} 0%, ${C.t6} 100%)`, padding: 20 }}>
+      <div style={{ background: C.wh, borderRadius: 12, padding: 36, maxWidth: 420, width: "100%", boxShadow: "0 20px 60px rgba(0,0,0,.25)", textAlign: "center" }}>
+        <div style={{ width: 64, height: 64, background: C.g5, borderRadius: 12, margin: "0 auto 18px", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 32, fontWeight: 700, color: C.t7, fontFamily: "Georgia,serif" }}>L</div>
+        <div style={{ fontSize: 20, fontWeight: 700, color: C.t7, marginBottom: 6, letterSpacing: ".06em" }}>EMPLOYEE LIFECYCLE</div>
+        <div style={{ fontSize: 13, color: C.b4, marginBottom: 24 }}>NewShire onboarding & offboarding</div>
+        <button onClick={onLogin} style={{ ...S.btn(C.hdr), width: "100%", padding: "12px 14px", fontSize: 14 }}>Sign in with Microsoft</button>
+        {err && <div style={{ marginTop: 14, padding: 10, background: C.erb, color: C.er, borderRadius: 4, fontSize: 12 }}>{err}</div>}
+        <div style={{ marginTop: 20, fontSize: 11, color: C.b3 }}>v{CONFIG.version}</div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// HEADER + TAB BAR
+// ============================================================
+function Header({ user, role, onLogout }) {
+  return (
+    <div style={S.hdr}>
+      <div style={S.hdrL}>
+        <div style={S.logo}>L</div>
+        <div>
+          <div style={S.hdrTitle}>EMPLOYEE LIFECYCLE</div>
+          <div style={S.hdrSub}>NewShire · Onboarding & Offboarding</div>
+        </div>
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+        <div style={{ textAlign: "right" }}>
+          <div style={S.hdrUser}>{user?.name || user?.email || "—"}</div>
+          <div style={S.hdrRole}>{role}</div>
+        </div>
+        <button onClick={onLogout} style={{ ...S.btnO(C.t1, "rgba(255,255,255,.18)"), background: "transparent", color: C.t1 }}>Sign out</button>
+      </div>
+    </div>
+  );
+}
+function TabBar({ tabs, active, onChange }) {
+  return (
+    <div style={S.tabBar}>
+      {tabs.map(t => (
+        <button key={t.key} style={S.tab(active === t.key)} onClick={() => onChange(t.key)}>
+          {t.label}{typeof t.count === "number" && t.count > 0 && (
+            <span style={{ marginLeft: 6, background: active === t.key ? C.g1 : C.b1, color: active === t.key ? C.g7 : C.b4, fontSize: 10, fontWeight: 700, padding: "1px 7px", borderRadius: 99 }}>{t.count}</span>
+          )}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// ============================================================
+// JOURNEY HELPERS
+// ============================================================
+function journeyProgress(journey, journeyTasks) {
+  const tasks = journeyTasks.filter(t => String(t.JourneyId) === String(journey.id));
+  const done = tasks.filter(t => t.Status === "Done").length;
+  return { done, total: tasks.length, pct: tasks.length ? Math.round((done / tasks.length) * 100) : 0, tasks };
+}
+function journeyAnchorDate(j) { return j.JourneyType === "Offboarding" ? j.EndDate : j.StartDate; }
+
+// ============================================================
+// JOURNEYS LIST (Onboarding / Offboarding)
+// ============================================================
+function JourneysTab({ type }) {
+  const { state, actions, role } = useData();
+  const [openId, setOpenId] = useState(null);
+  const [startOpen, setStartOpen] = useState(false);
+  const canStart = role === "Admin" || role === "HR";
+
+  const list = state.journeys
+    .filter(j => j.JourneyType === type)
+    .map(j => ({ ...j, _emp: state.employees.find(e => (e.Email || "").toLowerCase() === (j.EmployeeEmail || "").toLowerCase()), _p: journeyProgress(j, state.journeyTasks) }))
+    .sort((a, b) => {
+      const aA = journeyAnchorDate(a) || "";
+      const bA = journeyAnchorDate(b) || "";
+      return type === "Offboarding" ? aA.localeCompare(bA) : bA.localeCompare(aA);
+    });
+
+  const active = list.filter(j => j.Status !== "Complete" && j.Status !== "Cancelled");
+  const completed = list.filter(j => j.Status === "Complete" || j.Status === "Cancelled");
+
+  const k = {
+    total: active.length,
+    overdueTasks: active.reduce((s, j) => s + j._p.tasks.filter(t => classifyDue(t.DueDate, t.Status) === "overdue").length, 0),
+    pctAvg: active.length ? Math.round(active.reduce((s, j) => s + j._p.pct, 0) / active.length) : 0,
+  };
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
+        <div style={S.kpi}><div style={S.kpiL}>Active</div><div style={S.kpiV}>{k.total}</div></div>
+        <div style={S.kpi}><div style={S.kpiL}>Avg Progress</div><div style={S.kpiV}>{k.pctAvg}%</div></div>
+        <div style={S.kpi}><div style={S.kpiL}>Overdue Tasks</div><div style={{ ...S.kpiV, color: k.overdueTasks > 0 ? C.er : C.t7 }}>{k.overdueTasks}</div></div>
+      </div>
+
+      <div style={S.card}>
+        <div style={S.cardT}>
+          <span>Active {type}</span>
+          {canStart && <button style={S.btn(C.hdr)} onClick={() => setStartOpen(true)}>+ Start {type}</button>}
+        </div>
+        {active.length === 0 ? <Empty title={`No active ${type.toLowerCase()} journeys`} sub={canStart ? `Click "Start ${type}" to begin.` : "Check back later."} /> : (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 12 }}>
+            {active.map(j => <JourneyCard key={j.id} j={j} onClick={() => setOpenId(j.id)} />)}
+          </div>
+        )}
+      </div>
+
+      {completed.length > 0 && (
+        <div style={S.card}>
+          <div style={S.cardT}>Completed {type} ({completed.length})</div>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead><tr><th style={S.th}>Employee</th><th style={S.th}>Anchor Date</th><th style={S.th}>Status</th><th style={S.th}>Tasks</th><th style={S.th}></th></tr></thead>
+              <tbody>
+                {completed.map(j => (
+                  <tr key={j.id}>
+                    <td style={S.td}><div style={{ display: "flex", alignItems: "center", gap: 8 }}><Avatar name={j.EmployeeName || j._emp?.Title} size={26} /><div><div style={{ fontWeight: 600, color: C.t7 }}>{j.EmployeeName || j._emp?.Title || j.EmployeeEmail}</div><div style={{ fontSize: 11, color: C.b4 }}>{j.JobTitle || j._emp?.JobTitle || ""}</div></div></div></td>
+                    <td style={S.td}>{fmtDate(journeyAnchorDate(j))}</td>
+                    <td style={S.td}><Badge type={j.Status === "Complete" ? "ok" : "neutral"}>{j.Status}</Badge></td>
+                    <td style={S.td}>{j._p.done}/{j._p.total}</td>
+                    <td style={S.td}><button style={{ ...S.btnO(C.t5), ...S.xs }} onClick={() => setOpenId(j.id)}>Open</button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {openId && <JourneyDetailModal journeyId={openId} onClose={() => setOpenId(null)} />}
+      {startOpen && <StartJourneyModal type={type} onClose={() => setStartOpen(false)} />}
+    </div>
+  );
+}
+
+function JourneyCard({ j, onClick }) {
+  const overdue = j._p.tasks.filter(t => classifyDue(t.DueDate, t.Status) === "overdue").length;
+  const anchor = journeyAnchorDate(j);
+  const dayLabel = j.JourneyType === "Offboarding" ? (daysFromNow(anchor) >= 0 ? `${daysFromNow(anchor)} days to last day` : `${-daysFromNow(anchor)} days past last day`) : (daysFromNow(anchor) > 0 ? `Starts in ${daysFromNow(anchor)} days` : `Day ${-daysFromNow(anchor)}`);
+  return (
+    <div onClick={onClick} style={{ background: C.wh, border: `1px solid ${C.b2}`, borderRadius: 6, padding: 14, cursor: "pointer", transition: ".15s", boxShadow: "0 1px 2px rgba(28,55,64,.05)" }}
+      onMouseEnter={e => { e.currentTarget.style.borderColor = C.g5; e.currentTarget.style.boxShadow = "0 2px 8px rgba(205,160,75,.18)"; }}
+      onMouseLeave={e => { e.currentTarget.style.borderColor = C.b2; e.currentTarget.style.boxShadow = "0 1px 2px rgba(28,55,64,.05)"; }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+        <Avatar name={j.EmployeeName || j._emp?.Title} size={38} />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontWeight: 700, color: C.t7, fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{j.EmployeeName || j._emp?.Title || j.EmployeeEmail}</div>
+          <div style={{ fontSize: 11, color: C.b4 }}>{j.JobTitle || j._emp?.JobTitle || ""}</div>
+        </div>
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+        <div style={{ fontSize: 11, color: C.b4 }}>{dayLabel}</div>
+        <Badge type={overdue > 0 ? "er" : j._p.pct === 100 ? "ok" : "inf"}>{j._p.done}/{j._p.total}</Badge>
+      </div>
+      <ProgressBar value={j._p.pct} color={overdue > 0 ? C.er : j._p.pct === 100 ? C.ok : C.g5} />
+      <div style={{ display: "flex", justifyContent: "space-between", marginTop: 8, fontSize: 11, color: C.b4 }}>
+        <span>{fmtDate(anchor)}</span>
+        <span>{j._p.pct}%</span>
+      </div>
+      {overdue > 0 && <div style={{ marginTop: 8, fontSize: 11, color: C.er, fontWeight: 600 }}>⚠ {overdue} overdue task{overdue > 1 ? "s" : ""}</div>}
+    </div>
+  );
+}
+
+// ============================================================
+// JOURNEY DETAIL — task list w/ inline edit
+// ============================================================
+function JourneyDetailModal({ journeyId, onClose }) {
+  const { state, actions, role, currentEmail } = useData();
+  const j = state.journeys.find(x => String(x.id) === String(journeyId));
+  if (!j) return null;
+  const emp = state.employees.find(e => (e.Email || "").toLowerCase() === (j.EmployeeEmail || "").toLowerCase());
+  const tasks = state.journeyTasks.filter(t => String(t.JourneyId) === String(j.id))
+    .sort((a, b) => (a.OrderIdx || 0) - (b.OrderIdx || 0) || (a.DueDate || "").localeCompare(b.DueDate || ""));
+  const phases = uniq(tasks.map(t => t.Phase || "General"));
+  const canEdit = role === "Admin" || role === "HR" || (emp && (emp.ManagerEmail || "").toLowerCase() === (currentEmail || "").toLowerCase());
+
+  const [saving, setSaving] = useState(false);
+  const setTask = async (task, patch) => {
+    setSaving(true); try { await actions.updateTask(task.id, patch); } catch (e) { alert("Save failed: " + e.message); } finally { setSaving(false); }
+  };
+
+  const cancelJourney = async () => { if (!confirm(`Cancel this ${j.JourneyType.toLowerCase()} journey?`)) return; await actions.updateJourney(j.id, { Status: "Cancelled" }); onClose(); };
+  const reopenJourney = async () => { await actions.updateJourney(j.id, { Status: "In Progress" }); };
+  const completeJourney = async () => { await actions.updateJourney(j.id, { Status: "Complete" }); };
+
+  const p = journeyProgress(j, state.journeyTasks);
+
+  return (
+    <Modal title={`${j.JourneyType} — ${j.EmployeeName || emp?.Title || j.EmployeeEmail}`} width={860} onClose={onClose} footer={
+      <>
+        {role === "Admin" && j.Status !== "Cancelled" && <button style={S.btnO(C.er, C.er)} onClick={cancelJourney}>Cancel Journey</button>}
+        {(role === "Admin" || role === "HR") && j.Status === "Cancelled" && <button style={S.btnO(C.t5)} onClick={reopenJourney}>Reopen</button>}
+        {(role === "Admin" || role === "HR") && j.Status !== "Complete" && p.pct === 100 && <button style={S.btn(C.ok)} onClick={completeJourney}>Mark Complete</button>}
+        <button style={S.btnO()} onClick={onClose}>Close</button>
+      </>
+    }>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 14 }}>
+        <div><div style={S.sec}>Status</div><Badge type={j.Status === "Complete" ? "ok" : j.Status === "Cancelled" ? "neutral" : "inf"}>{j.Status}</Badge></div>
+        <div><div style={S.sec}>{j.JourneyType === "Offboarding" ? "Last Day" : "Start Date"}</div><div style={{ fontWeight: 600, color: C.t7 }}>{fmtDate(journeyAnchorDate(j))}</div></div>
+        <div><div style={S.sec}>Progress</div><div style={{ fontWeight: 600 }}>{p.done}/{p.total} ({p.pct}%)</div><ProgressBar value={p.pct} /></div>
+      </div>
+      <div style={{ background: C.t0, border: `1px solid ${C.t1}`, borderRadius: 6, padding: 10, marginBottom: 14, fontSize: 12 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: "4px 12px" }}>
+          <div style={{ color: C.b4, fontWeight: 600 }}>Email</div><div>{j.EmployeeEmail}</div>
+          <div style={{ color: C.b4, fontWeight: 600 }}>Title</div><div>{j.JobTitle || emp?.JobTitle || "—"}</div>
+          <div style={{ color: C.b4, fontWeight: 600 }}>Manager</div><div>{j.ManagerEmail || emp?.ManagerEmail || "—"}</div>
+          {j.Notes && <><div style={{ color: C.b4, fontWeight: 600 }}>Notes</div><div style={{ whiteSpace: "pre-wrap" }}>{j.Notes}</div></>}
+        </div>
+      </div>
+
+      {phases.map(ph => (
+        <div key={ph} style={{ marginBottom: 16 }}>
+          <div style={{ ...S.sec, marginBottom: 6 }}>{ph}</div>
+          <div style={{ border: `1px solid ${C.b1}`, borderRadius: 6, overflow: "hidden" }}>
+            {tasks.filter(t => (t.Phase || "General") === ph).map((t, idx, arr) => {
+              const cls = classifyDue(t.DueDate, t.Status);
+              const dueColor = { overdue: C.er, soon: C.wn, ok: C.b6, done: C.b4, none: C.b4 }[cls];
+              return (
+                <div key={t.id} style={{ display: "grid", gridTemplateColumns: "auto 1fr auto", alignItems: "center", gap: 10, padding: "10px 12px", borderBottom: idx < arr.length - 1 ? `1px solid ${C.b1}` : "none", background: t.Status === "Done" ? C.okb : C.wh }}>
+                  <input type="checkbox" checked={t.Status === "Done"} disabled={!canEdit || saving} onChange={e => setTask(t, { Status: e.target.checked ? "Done" : "Pending", CompletedDate: e.target.checked ? todayIso() : "", CompletedBy: e.target.checked ? currentEmail : "" })} style={{ width: 18, height: 18, accentColor: C.ok, cursor: canEdit ? "pointer" : "default" }} />
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontWeight: 600, fontSize: 13, color: C.t7, textDecoration: t.Status === "Done" ? "line-through" : "none" }}>{t.Title}{t.Required === false && <span style={{ marginLeft: 6, fontSize: 10, color: C.b4, fontWeight: 500 }}>(optional)</span>}</div>
+                    <div style={{ display: "flex", gap: 12, fontSize: 11, marginTop: 3, flexWrap: "wrap" }}>
+                      <span style={{ color: C.b4 }}>Assignee: <strong style={{ color: C.t6 }}>{t.AssigneeRole || "—"}{t.AssigneeEmail ? ` · ${t.AssigneeEmail}` : ""}</strong></span>
+                      <span style={{ color: dueColor, fontWeight: 600 }}>Due {fmtDate(t.DueDate)}</span>
+                      {t.Status === "Done" && t.CompletedDate && <span style={{ color: C.ok }}>✓ {fmtDate(t.CompletedDate)}</span>}
+                    </div>
+                    {t.Notes && <div style={{ fontSize: 11, color: C.b4, marginTop: 4, whiteSpace: "pre-wrap" }}>{t.Notes}</div>}
+                  </div>
+                  {canEdit && <button style={{ ...S.btnO(C.t5), ...S.xs }} onClick={() => actions.openTaskEdit(t.id)}>Edit</button>}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+    </Modal>
+  );
+}
+
+// ============================================================
+// TASK EDIT MODAL
+// ============================================================
+function TaskEditModal({ taskId, onClose }) {
+  const { state, actions } = useData();
+  const t = state.journeyTasks.find(x => String(x.id) === String(taskId));
+  const [f, setF] = useState(() => ({ Title: t?.Title || "", DueDate: t?.DueDate || "", AssigneeEmail: t?.AssigneeEmail || "", AssigneeRole: t?.AssigneeRole || "", Notes: t?.Notes || "", Status: t?.Status || "Pending", Required: t?.Required !== false }));
+  const [saving, setSaving] = useState(false);
+  if (!t) return null;
+  const save = async () => { setSaving(true); try { await actions.updateTask(t.id, f); onClose(); } catch (e) { alert("Save failed: " + e.message); } finally { setSaving(false); } };
+  const del = async () => { if (!confirm("Delete this task?")) return; setSaving(true); try { await actions.deleteTask(t.id); onClose(); } catch (e) { alert("Delete failed: " + e.message); } finally { setSaving(false); } };
+
+  return (
+    <Modal title="Edit Task" onClose={onClose} footer={
+      <>
+        <button style={S.btnO(C.er, C.er)} onClick={del} disabled={saving}>Delete</button>
+        <button style={S.btnO()} onClick={onClose} disabled={saving}>Cancel</button>
+        <button style={S.btn(C.hdr)} onClick={save} disabled={saving}>{saving ? "Saving…" : "Save"}</button>
+      </>
+    }>
+      <div style={{ display: "grid", gap: 12 }}>
+        <div><label style={S.label}>Title</label><input style={S.input} value={f.Title} onChange={e => setF({ ...f, Title: e.target.value })} /></div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <div><label style={S.label}>Due Date</label><input style={S.input} type="date" value={f.DueDate || ""} onChange={e => setF({ ...f, DueDate: e.target.value })} /></div>
+          <div><label style={S.label}>Status</label><select style={S.select} value={f.Status} onChange={e => setF({ ...f, Status: e.target.value })}><option>Pending</option><option>In Progress</option><option>Done</option><option>Blocked</option></select></div>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <div><label style={S.label}>Assignee Role</label><select style={S.select} value={f.AssigneeRole} onChange={e => setF({ ...f, AssigneeRole: e.target.value })}><option value="">—</option><option>HR</option><option>IT</option><option>Manager</option><option>Employee</option><option>Admin</option></select></div>
+          <div><label style={S.label}>Assignee Email (override)</label><input style={S.input} value={f.AssigneeEmail} placeholder="optional" onChange={e => setF({ ...f, AssigneeEmail: e.target.value })} /></div>
+        </div>
+        <div><label style={S.label}>Notes</label><textarea style={S.textarea} value={f.Notes} onChange={e => setF({ ...f, Notes: e.target.value })} /></div>
+        <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}><input type="checkbox" checked={f.Required} onChange={e => setF({ ...f, Required: e.target.checked })} /> Required</label>
+      </div>
+    </Modal>
+  );
+}
+
+// ============================================================
+// START JOURNEY MODAL
+// ============================================================
+function StartJourneyModal({ type, onClose }) {
+  const { state, actions, currentEmail } = useData();
+  const [f, setF] = useState({
+    EmployeeEmail: "", EmployeeName: "", JobTitle: "", ManagerEmail: "",
+    Department: "", StartDate: type === "Onboarding" ? todayIso() : "", EndDate: type === "Offboarding" ? todayIso() : "",
+    Notes: "", existingEmpId: "",
+  });
+  const [saving, setSaving] = useState(false);
+  const [warn, setWarn] = useState("");
+
+  const usableTemplates = state.templates.filter(t => t.JourneyType === type && t.Active !== false);
+
+  const onPickEmployee = (id) => {
+    if (!id) { setF({ ...f, existingEmpId: "", EmployeeEmail: "", EmployeeName: "", JobTitle: "", ManagerEmail: "" }); return; }
+    const e = state.employees.find(x => String(x.id) === String(id));
+    if (!e) return;
+    setF({ ...f, existingEmpId: id, EmployeeEmail: (e.Email || "").toLowerCase(), EmployeeName: e.Title || "", JobTitle: e.JobTitle || "", ManagerEmail: (e.ManagerEmail || "").toLowerCase(), Department: e.Department || f.Department });
+  };
+
+  const submit = async () => {
+    setWarn("");
+    if (!f.EmployeeEmail) return setWarn("Employee email is required.");
+    if (type === "Onboarding" && !f.StartDate) return setWarn("Start date is required.");
+    if (type === "Offboarding" && !f.EndDate) return setWarn("Last day is required.");
+    const dup = state.journeys.find(j => j.JourneyType === type && (j.EmployeeEmail || "").toLowerCase() === f.EmployeeEmail.toLowerCase() && j.Status !== "Complete" && j.Status !== "Cancelled");
+    if (dup) { if (!confirm(`An active ${type.toLowerCase()} journey already exists for this employee. Create another anyway?`)) return; }
+
+    setSaving(true);
+    try {
+      const anchor = type === "Offboarding" ? f.EndDate : f.StartDate;
+      const jrn = await actions.createJourney({
+        JourneyType: type,
+        EmployeeEmail: f.EmployeeEmail.toLowerCase(),
+        EmployeeName: f.EmployeeName,
+        JobTitle: f.JobTitle,
+        ManagerEmail: (f.ManagerEmail || "").toLowerCase(),
+        Department: f.Department,
+        StartDate: f.StartDate || "",
+        EndDate: f.EndDate || "",
+        Status: "In Progress",
+        Notes: f.Notes,
+        CreatedBy: currentEmail,
+      });
+      // Create tasks from templates
+      let idx = 0;
+      for (const tpl of usableTemplates) {
+        idx++;
+        const due = addDays(anchor, tpl.OffsetDays || 0);
+        await actions.createTask({
+          JourneyId: String(jrn.id),
+          EmployeeEmail: f.EmployeeEmail.toLowerCase(),
+          Phase: tpl.Phase || "General",
+          Title: tpl.Title,
+          AssigneeRole: tpl.AssigneeRole || "",
+          AssigneeEmail: tpl.AssigneeRole === "Manager" ? (f.ManagerEmail || "") : tpl.AssigneeRole === "Employee" ? f.EmployeeEmail.toLowerCase() : "",
+          DueDate: due,
+          OffsetDays: tpl.OffsetDays || 0,
+          Required: tpl.Required !== false,
+          Status: "Pending",
+          Notes: tpl.Notes || "",
+          OrderIdx: idx,
+          TemplateId: String(tpl.id),
+        });
+      }
+      await actions.reload();
+      onClose();
+    } catch (e) {
+      setWarn("Failed to start journey: " + e.message);
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <Modal title={`Start ${type}`} onClose={onClose} width={620} footer={
+      <>
+        <button style={S.btnO()} onClick={onClose} disabled={saving}>Cancel</button>
+        <button style={S.btn(C.hdr)} onClick={submit} disabled={saving}>{saving ? "Creating…" : `Start ${type}`}</button>
+      </>
+    }>
+      <div style={{ display: "grid", gap: 12 }}>
+        <div>
+          <label style={S.label}>Existing employee (optional)</label>
+          <select style={S.select} value={f.existingEmpId} onChange={e => onPickEmployee(e.target.value)}>
+            <option value="">— New / not in list —</option>
+            {state.employees.filter(e => e.Email).sort((a, b) => (a.Title || "").localeCompare(b.Title || "")).map(e => (
+              <option key={e.id} value={e.id}>{e.Title} — {e.Email}</option>
+            ))}
+          </select>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <div><label style={S.label}>Full Name</label><input style={S.input} value={f.EmployeeName} onChange={e => setF({ ...f, EmployeeName: e.target.value })} /></div>
+          <div><label style={S.label}>Email *</label><input style={S.input} value={f.EmployeeEmail} onChange={e => setF({ ...f, EmployeeEmail: e.target.value.toLowerCase() })} placeholder="name@newshirepm.com" /></div>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <div><label style={S.label}>Job Title</label><input style={S.input} value={f.JobTitle} onChange={e => setF({ ...f, JobTitle: e.target.value })} /></div>
+          <div><label style={S.label}>Department</label><input style={S.input} value={f.Department} onChange={e => setF({ ...f, Department: e.target.value })} /></div>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <div><label style={S.label}>Manager Email</label><input style={S.input} value={f.ManagerEmail} onChange={e => setF({ ...f, ManagerEmail: e.target.value.toLowerCase() })} /></div>
+          {type === "Onboarding" ? (
+            <div><label style={S.label}>Start Date *</label><input style={S.input} type="date" value={f.StartDate} onChange={e => setF({ ...f, StartDate: e.target.value })} /></div>
+          ) : (
+            <div><label style={S.label}>Last Day *</label><input style={S.input} type="date" value={f.EndDate} onChange={e => setF({ ...f, EndDate: e.target.value })} /></div>
+          )}
+        </div>
+        <div><label style={S.label}>Notes</label><textarea style={S.textarea} value={f.Notes} onChange={e => setF({ ...f, Notes: e.target.value })} placeholder="Anything the team needs to know" /></div>
+        <div style={{ background: C.infb, border: `1px solid ${C.inf}33`, borderRadius: 4, padding: 10, fontSize: 12, color: C.inf }}>
+          This will create <strong>{usableTemplates.length}</strong> task{usableTemplates.length === 1 ? "" : "s"} from the <strong>{type}</strong> template, due dates offset from the {type === "Offboarding" ? "last day" : "start date"}.
+        </div>
+        {warn && <div style={{ background: C.erb, color: C.er, padding: 10, borderRadius: 4, fontSize: 12 }}>{warn}</div>}
+      </div>
+    </Modal>
+  );
+}
+
+// ============================================================
+// TEMPLATES TAB
+// ============================================================
+function TemplatesTab() {
+  const { state, actions, role } = useData();
+  const [seed, setSeed] = useState(false);
+  const [editing, setEditing] = useState(null);
+  const [filter, setFilter] = useState("Onboarding");
+  const canEdit = role === "Admin" || role === "HR";
+
+  const visible = state.templates.filter(t => t.JourneyType === filter).sort((a, b) => (a.Phase || "").localeCompare(b.Phase || "") || (a.OffsetDays || 0) - (b.OffsetDays || 0));
+
+  const seedDefaults = async () => {
+    if (!confirm(`Seed ${DEFAULT_TEMPLATES.length} default templates? This adds to existing templates, it does not replace them.`)) return;
+    setSeed(true);
+    try {
+      for (const tpl of DEFAULT_TEMPLATES) {
+        await actions.createTemplate({ ...tpl, Active: true });
+      }
+      await actions.reload();
+    } catch (e) { alert("Seed failed: " + e.message); } finally { setSeed(false); }
+  };
+
+  return (
+    <div>
+      <div style={S.card}>
+        <div style={S.cardT}>
+          <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+            <span>Task Templates</span>
+            <select style={{ ...S.select, width: "auto" }} value={filter} onChange={e => setFilter(e.target.value)}>
+              <option>Onboarding</option><option>Offboarding</option>
+            </select>
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            {canEdit && state.templates.length === 0 && <button style={S.btnO(C.t5)} onClick={seedDefaults} disabled={seed}>{seed ? "Seeding…" : "Seed defaults"}</button>}
+            {canEdit && <button style={S.btn(C.hdr)} onClick={() => setEditing({ JourneyType: filter, Phase: "", Title: "", AssigneeRole: "HR", OffsetDays: 0, Required: true, Notes: "", Active: true })}>+ New Template</button>}
+          </div>
+        </div>
+        {visible.length === 0 ? (
+          <Empty title={`No ${filter} templates yet`} sub={canEdit ? "Click 'Seed defaults' to load NewShire's starter set, or '+ New Template' to add your own." : "Ask HR/Admin to set this up."} />
+        ) : (
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead><tr>
+                <th style={S.th}>Phase</th><th style={S.th}>Title</th><th style={S.th}>Assignee</th><th style={S.th}>Offset</th><th style={S.th}>Required</th><th style={S.th}></th>
+              </tr></thead>
+              <tbody>
+                {visible.map(t => (
+                  <tr key={t.id}>
+                    <td style={S.td}><Badge type="neutral">{t.Phase || "—"}</Badge></td>
+                    <td style={S.td}><div style={{ fontWeight: 600, color: C.t7 }}>{t.Title}</div>{t.Notes && <div style={{ fontSize: 11, color: C.b4 }}>{t.Notes}</div>}</td>
+                    <td style={S.td}>{t.AssigneeRole}</td>
+                    <td style={S.td}><span style={{ fontFamily: mono, fontSize: 12 }}>{t.OffsetDays > 0 ? `+${t.OffsetDays}` : t.OffsetDays}d</span></td>
+                    <td style={S.td}>{t.Required === false ? <Badge type="neutral">Optional</Badge> : <Badge type="ok">Required</Badge>}</td>
+                    <td style={S.td}>{canEdit && <button style={{ ...S.btnO(C.t5), ...S.xs }} onClick={() => setEditing(t)}>Edit</button>}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+      {editing && <TemplateEditModal tpl={editing} onClose={() => setEditing(null)} />}
+    </div>
+  );
+}
+
+function TemplateEditModal({ tpl, onClose }) {
+  const { actions } = useData();
+  const isNew = !tpl.id;
+  const [f, setF] = useState({ JourneyType: tpl.JourneyType, Phase: tpl.Phase || "", Title: tpl.Title || "", AssigneeRole: tpl.AssigneeRole || "HR", OffsetDays: tpl.OffsetDays ?? 0, Required: tpl.Required !== false, Notes: tpl.Notes || "", Active: tpl.Active !== false });
+  const [saving, setSaving] = useState(false);
+  const save = async () => {
+    if (!f.Title) return alert("Title is required.");
+    setSaving(true);
+    try {
+      if (isNew) await actions.createTemplate(f);
+      else await actions.updateTemplate(tpl.id, f);
+      await actions.reload();
+      onClose();
+    } catch (e) { alert("Save failed: " + e.message); } finally { setSaving(false); }
+  };
+  const del = async () => {
+    if (!confirm("Delete this template? Existing journeys will not be affected.")) return;
+    setSaving(true);
+    try { await actions.deleteTemplate(tpl.id); await actions.reload(); onClose(); } catch (e) { alert("Delete failed: " + e.message); } finally { setSaving(false); }
+  };
+  return (
+    <Modal title={isNew ? "New Template Task" : "Edit Template Task"} onClose={onClose} footer={
+      <>
+        {!isNew && <button style={S.btnO(C.er, C.er)} onClick={del} disabled={saving}>Delete</button>}
+        <button style={S.btnO()} onClick={onClose} disabled={saving}>Cancel</button>
+        <button style={S.btn(C.hdr)} onClick={save} disabled={saving}>{saving ? "Saving…" : "Save"}</button>
+      </>
+    }>
+      <div style={{ display: "grid", gap: 12 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <div><label style={S.label}>Journey Type</label><select style={S.select} value={f.JourneyType} onChange={e => setF({ ...f, JourneyType: e.target.value })}><option>Onboarding</option><option>Offboarding</option></select></div>
+          <div><label style={S.label}>Phase</label><input style={S.input} value={f.Phase} placeholder="Pre-Start, Day 1, Week 1, 30-Day, …" onChange={e => setF({ ...f, Phase: e.target.value })} /></div>
+        </div>
+        <div><label style={S.label}>Title</label><input style={S.input} value={f.Title} onChange={e => setF({ ...f, Title: e.target.value })} /></div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+          <div><label style={S.label}>Assignee Role</label><select style={S.select} value={f.AssigneeRole} onChange={e => setF({ ...f, AssigneeRole: e.target.value })}><option>HR</option><option>IT</option><option>Manager</option><option>Employee</option><option>Admin</option></select></div>
+          <div><label style={S.label}>Offset Days</label><input style={S.input} type="number" value={f.OffsetDays} onChange={e => setF({ ...f, OffsetDays: parseInt(e.target.value) || 0 })} /></div>
+          <div style={{ alignSelf: "end" }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, paddingTop: 8 }}><input type="checkbox" checked={f.Required} onChange={e => setF({ ...f, Required: e.target.checked })} /> Required</label>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}><input type="checkbox" checked={f.Active} onChange={e => setF({ ...f, Active: e.target.checked })} /> Active</label>
+          </div>
+        </div>
+        <div><label style={S.label}>Notes</label><textarea style={S.textarea} value={f.Notes} onChange={e => setF({ ...f, Notes: e.target.value })} /></div>
+        <div style={{ fontSize: 11, color: C.b4 }}>
+          Offset is days from the anchor date: positive = after start (onboarding) or after last day (offboarding); negative = before. E.g. <code style={{ fontFamily: mono }}>-7</code> on onboarding = 7 days before start date.
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// ============================================================
+// MY TASKS
+// ============================================================
+function MyTasksTab() {
+  const { state, currentEmail } = useData();
+  const myEmail = (currentEmail || "").toLowerCase();
+  const mine = state.journeyTasks.filter(t => (t.AssigneeEmail || "").toLowerCase() === myEmail && t.Status !== "Done")
+    .map(t => ({ ...t, _j: state.journeys.find(j => String(j.id) === String(t.JourneyId)) }))
+    .sort((a, b) => (a.DueDate || "9999").localeCompare(b.DueDate || "9999"));
+  const overdue = mine.filter(t => classifyDue(t.DueDate, t.Status) === "overdue");
+  const soon = mine.filter(t => classifyDue(t.DueDate, t.Status) === "soon");
+  const later = mine.filter(t => !["overdue", "soon"].includes(classifyDue(t.DueDate, t.Status)));
+
+  const Section = ({ title, items, type }) => items.length === 0 ? null : (
+    <div style={S.card}>
+      <div style={S.cardT}><span>{title}</span><Badge type={type}>{items.length}</Badge></div>
+      {items.map(t => <TaskRow key={t.id} t={t} />)}
+    </div>
+  );
+  if (mine.length === 0) return <div style={S.card}><Empty title="Nothing assigned to you" sub="You're all caught up." /></div>;
+  return (
+    <div>
+      <Section title="Overdue" items={overdue} type="er" />
+      <Section title="Due Soon" items={soon} type="wn" />
+      <Section title="Upcoming" items={later} type="inf" />
+    </div>
+  );
+}
+function TaskRow({ t }) {
+  const { actions, currentEmail } = useData();
+  const cls = classifyDue(t.DueDate, t.Status);
+  const color = { overdue: C.er, soon: C.wn, ok: C.b6 }[cls] || C.b6;
+  const markDone = () => actions.updateTask(t.id, { Status: "Done", CompletedDate: todayIso(), CompletedBy: currentEmail });
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "auto 1fr auto", gap: 10, padding: "10px 0", borderBottom: `1px solid ${C.b1}`, alignItems: "center" }}>
+      <input type="checkbox" onChange={markDone} style={{ width: 18, height: 18, accentColor: C.ok, cursor: "pointer" }} />
+      <div>
+        <div style={{ fontWeight: 600, color: C.t7 }}>{t.Title}</div>
+        <div style={{ fontSize: 11, color: C.b4, marginTop: 2 }}>
+          {t._j?.JourneyType} · {t._j?.EmployeeName || t.EmployeeEmail} · <span style={{ color, fontWeight: 600 }}>Due {fmtDate(t.DueDate)}</span>
+        </div>
+        {t.Notes && <div style={{ fontSize: 11, color: C.b4, marginTop: 4 }}>{t.Notes}</div>}
+      </div>
+      <button style={{ ...S.btnO(C.t5), ...S.xs }} onClick={() => actions.openJourney(t.JourneyId)}>View Journey</button>
+    </div>
+  );
+}
+
+// ============================================================
+// EMPLOYEES TAB (Admin / HR)
+// ============================================================
+function EmployeesTab() {
+  const { state, actions } = useData();
+  const [q, setQ] = useState("");
+  const [showInactive, setShowInactive] = useState(false);
+  const employees = state.employees
+    .filter(e => showInactive || e.EmployeeActive !== false)
+    .filter(e => !q || (e.Title || "").toLowerCase().includes(q.toLowerCase()) || (e.Email || "").toLowerCase().includes(q.toLowerCase()) || (e.JobTitle || "").toLowerCase().includes(q.toLowerCase()))
+    .sort((a, b) => (a.Title || "").localeCompare(b.Title || ""));
+
+  const byEmail = (email) => state.journeys.find(j => (j.EmployeeEmail || "").toLowerCase() === (email || "").toLowerCase() && j.Status !== "Complete" && j.Status !== "Cancelled");
+
+  return (
+    <div>
+      <div style={S.card}>
+        <div style={S.cardT}>
+          <span>Employees ({employees.length})</span>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <input style={{ ...S.input, width: 220 }} placeholder="Search…" value={q} onChange={e => setQ(e.target.value)} />
+            <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12 }}><input type="checkbox" checked={showInactive} onChange={e => setShowInactive(e.target.checked)} /> Show inactive</label>
+          </div>
+        </div>
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead><tr><th style={S.th}>Name</th><th style={S.th}>Title</th><th style={S.th}>Email</th><th style={S.th}>Manager</th><th style={S.th}>Status</th><th style={S.th}>Active Journey</th></tr></thead>
+            <tbody>
+              {employees.map(e => {
+                const j = byEmail(e.Email);
+                return (
+                  <tr key={e.id}>
+                    <td style={S.td}><div style={{ display: "flex", alignItems: "center", gap: 8 }}><Avatar name={e.Title} size={28} /><div style={{ fontWeight: 600, color: C.t7 }}>{e.Title}</div></div></td>
+                    <td style={S.td}>{e.JobTitle || "—"}</td>
+                    <td style={S.td}>{e.Email}</td>
+                    <td style={S.td}>{e.ManagerEmail || "—"}</td>
+                    <td style={S.td}>{e.EmployeeActive === false ? <Badge type="neutral">Inactive</Badge> : <Badge type="ok">Active</Badge>}</td>
+                    <td style={S.td}>{j ? <button style={{ ...S.btnO(C.t5), ...S.xs }} onClick={() => actions.openJourney(j.id)}><Badge type={j.JourneyType === "Onboarding" ? "inf" : "wn"}>{j.JourneyType}</Badge> · {fmtDate(journeyAnchorDate(j))}</button> : <span style={{ color: C.b4 }}>—</span>}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// REPORTS TAB
+// ============================================================
+function ReportsTab() {
+  const { state } = useData();
+  const active = state.journeys.filter(j => j.Status !== "Complete" && j.Status !== "Cancelled");
+  const ob = active.filter(j => j.JourneyType === "Onboarding");
+  const of = active.filter(j => j.JourneyType === "Offboarding");
+  const allTasks = state.journeyTasks.filter(t => active.some(j => String(j.id) === String(t.JourneyId)));
+  const overdue = allTasks.filter(t => classifyDue(t.DueDate, t.Status) === "overdue");
+  const byRole = {};
+  overdue.forEach(t => { const r = t.AssigneeRole || "Unassigned"; byRole[r] = (byRole[r] || 0) + 1; });
+  const last30 = state.journeys.filter(j => j.Status === "Complete" && j.Modified && (Date.now() - new Date(j.Modified).getTime()) / 86400000 <= 30);
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
+        <div style={S.kpi}><div style={S.kpiL}>Active Onboarding</div><div style={S.kpiV}>{ob.length}</div></div>
+        <div style={S.kpi}><div style={S.kpiL}>Active Offboarding</div><div style={S.kpiV}>{of.length}</div></div>
+        <div style={S.kpi}><div style={S.kpiL}>Overdue Tasks</div><div style={{ ...S.kpiV, color: overdue.length > 0 ? C.er : C.t7 }}>{overdue.length}</div></div>
+        <div style={S.kpi}><div style={S.kpiL}>Completed (30d)</div><div style={S.kpiV}>{last30.length}</div></div>
+      </div>
+      <div style={S.card}>
+        <div style={S.cardT}>Overdue Tasks by Role</div>
+        {Object.keys(byRole).length === 0 ? <Empty title="No overdue tasks" sub="Everyone is on track." /> : (
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead><tr><th style={S.th}>Role</th><th style={S.th}>Overdue</th></tr></thead>
+            <tbody>{Object.entries(byRole).sort((a, b) => b[1] - a[1]).map(([r, n]) => <tr key={r}><td style={S.td}>{r}</td><td style={S.td}><Badge type="er">{n}</Badge></td></tr>)}</tbody>
+          </table>
+        )}
+      </div>
+      <div style={S.card}>
+        <div style={S.cardT}>Recent Activity</div>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead><tr><th style={S.th}>When</th><th style={S.th}>Journey</th><th style={S.th}>Employee</th><th style={S.th}>Status</th></tr></thead>
+          <tbody>
+            {state.journeys.slice().sort((a, b) => (b.Modified || "").localeCompare(a.Modified || "")).slice(0, 12).map(j => (
+              <tr key={j.id}>
+                <td style={S.td}>{fmtDate(j.Modified)}</td>
+                <td style={S.td}><Badge type={j.JourneyType === "Onboarding" ? "inf" : "wn"}>{j.JourneyType}</Badge></td>
+                <td style={S.td}>{j.EmployeeName || j.EmployeeEmail}</td>
+                <td style={S.td}><Badge type={j.Status === "Complete" ? "ok" : j.Status === "Cancelled" ? "neutral" : "inf"}>{j.Status}</Badge></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// SETUP / DIAGNOSTICS — first-run helper
+// ============================================================
+function SetupTab() {
+  const { state } = useData();
+  const checks = [
+    { label: `${CONFIG.lists.employees} list`, ok: state.employees.length > 0, hint: "Should already exist (shared list)." },
+    { label: `${CONFIG.lists.journeys} list`, ok: state.journeys.length > 0 || true /* empty is fine */, hint: "Create this list in SharePoint." },
+    { label: `${CONFIG.lists.templateTasks} list (has templates)`, ok: state.templates.length > 0, hint: "Use the Templates tab → 'Seed defaults'." },
+    { label: `${CONFIG.lists.journeyTasks} list`, ok: state.journeyTasks.length >= 0, hint: "Create this list in SharePoint." },
+  ];
+  const Row = ({ label, ok, hint }) => (
+    <div style={{ display: "grid", gridTemplateColumns: "auto 1fr auto", gap: 10, alignItems: "center", padding: "10px 0", borderBottom: `1px solid ${C.b1}` }}>
+      <div style={{ fontSize: 18 }}>{ok ? "✅" : "⚠️"}</div>
+      <div><div style={{ fontWeight: 600 }}>{label}</div><div style={{ fontSize: 11, color: C.b4 }}>{hint}</div></div>
+      <Badge type={ok ? "ok" : "wn"}>{ok ? "ok" : "set up"}</Badge>
+    </div>
+  );
+  return (
+    <div>
+      <div style={S.card}>
+        <div style={S.cardT}>Setup checklist</div>
+        {checks.map(c => <Row key={c.label} {...c} />)}
+        <div style={{ marginTop: 14, fontSize: 12, color: C.b4 }}>
+          <strong>Required SharePoint Lists</strong> on the NewShire site (Graph paths: <code style={{ fontFamily: mono }}>sites/{CONFIG.siteId.split(",")[1].slice(0, 8)}…/lists/&lt;name&gt;</code>):
+          <ul style={{ marginLeft: 18, marginTop: 6, lineHeight: 1.8 }}>
+            <li><strong>ELC_Journeys</strong> — Title (single line), JourneyType, EmployeeEmail, EmployeeName, JobTitle, ManagerEmail, Department, StartDate (Date), EndDate (Date), Status, Notes (Multi line), CreatedBy</li>
+            <li><strong>ELC_TemplateTasks</strong> — Title, JourneyType, Phase, AssigneeRole, OffsetDays (Number), Required (Yes/No), Active (Yes/No), Notes (Multi line)</li>
+            <li><strong>ELC_JourneyTasks</strong> — Title, JourneyId, EmployeeEmail, Phase, AssigneeRole, AssigneeEmail, DueDate (Date), OffsetDays (Number), Required (Yes/No), Status, Notes (Multi line), CompletedDate (Date), CompletedBy, OrderIdx (Number), TemplateId</li>
+            <li><strong>ELC_Config</strong> — Title, ConfigJSON (Multi line)</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// MAIN APP
+// ============================================================
+function App() {
+  const { acct, token, login, logout, refresh, err: authErr, ready } = useMsal();
+  const [state, setState] = useState({ employees: [], journeys: [], templates: [], journeyTasks: [], config: {} });
+  const [loading, setLoading] = useState(false);
+  const [loadErr, setLoadErr] = useState(null);
+  const [tab, setTab] = useState("onboarding");
+  const [editTaskId, setEditTaskId] = useState(null);
+  const [openJourneyId, setOpenJourneyId] = useState(null);
+
+  const currentEmail = (acct?.username || "").toLowerCase();
+  const me = state.employees.find(e => (e.Email || "").toLowerCase() === currentEmail);
+  const role = detectRole(me, currentEmail);
+
+  const reload = useCallback(async () => {
+    if (!token) return;
+    setLoading(true); setLoadErr(null);
+    try { const d = await loadAll(token); setState(d); }
+    catch (e) { setLoadErr(e.message); }
+    finally { setLoading(false); }
+  }, [token]);
+
+  useEffect(() => { if (token) reload(); }, [token, reload]);
+
+  const withToken = useCallback(async (fn) => {
+    let tk = token; try { return await fn(tk); }
+    catch (e) {
+      if ((e.message || "").includes("401") || (e.message || "").includes("403")) { tk = await refresh(); if (tk) return await fn(tk); }
+      throw e;
+    }
+  }, [token, refresh]);
+
+  const actions = useMemo(() => ({
+    reload,
+    openTaskEdit: id => setEditTaskId(id),
+    openJourney: id => setOpenJourneyId(id),
+    createJourney: async (fields) => withToken(async tk => {
+      const r = await gPost(tk, lUrl(CONFIG.lists.journeys), { Title: `${fields.JourneyType} — ${fields.EmployeeName || fields.EmployeeEmail}`, ...fields });
+      return { id: r.id, ...r.fields };
+    }),
+    updateJourney: async (id, patch) => withToken(async tk => { await gPatch(tk, iUrl(CONFIG.lists.journeys, id), patch); await reload(); }),
+    createTask: async (fields) => withToken(async tk => {
+      const r = await gPost(tk, lUrl(CONFIG.lists.journeyTasks), { Title: fields.Title, ...fields });
+      return { id: r.id, ...r.fields };
+    }),
+    updateTask: async (id, patch) => withToken(async tk => {
+      await gPatch(tk, iUrl(CONFIG.lists.journeyTasks, id), patch);
+      setState(s => ({ ...s, journeyTasks: s.journeyTasks.map(t => String(t.id) === String(id) ? { ...t, ...patch } : t) }));
+    }),
+    deleteTask: async (id) => withToken(async tk => {
+      await gDelete(tk, `${SITE}/lists/${CONFIG.lists.journeyTasks}/items/${id}`);
+      setState(s => ({ ...s, journeyTasks: s.journeyTasks.filter(t => String(t.id) !== String(id)) }));
+    }),
+    createTemplate: async (fields) => withToken(async tk => { await gPost(tk, lUrl(CONFIG.lists.templateTasks), { Title: fields.Title, ...fields }); }),
+    updateTemplate: async (id, patch) => withToken(async tk => { await gPatch(tk, iUrl(CONFIG.lists.templateTasks, id), patch); }),
+    deleteTemplate: async (id) => withToken(async tk => { await gDelete(tk, `${SITE}/lists/${CONFIG.lists.templateTasks}/items/${id}`); }),
+  }), [withToken, reload]);
+
+  const ctxValue = { state, actions, role, currentEmail, me };
+
+  if (!ready) return <div style={{ ...S.page, display: "flex", alignItems: "center", justifyContent: "center" }}><div style={{ animation: "pulse 1.4s ease-in-out infinite", color: C.b4 }}>Loading…</div></div>;
+  if (!acct) return <LoginScreen onLogin={login} err={authErr} />;
+
+  const obCount = state.journeys.filter(j => j.JourneyType === "Onboarding" && j.Status !== "Complete" && j.Status !== "Cancelled").length;
+  const offCount = state.journeys.filter(j => j.JourneyType === "Offboarding" && j.Status !== "Complete" && j.Status !== "Cancelled").length;
+  const myCount = state.journeyTasks.filter(t => (t.AssigneeEmail || "").toLowerCase() === currentEmail && t.Status !== "Done").length;
+
+  const isAdmin = role === "Admin" || role === "HR";
+  const tabs = [
+    { key: "onboarding", label: "Onboarding", count: obCount },
+    { key: "offboarding", label: "Offboarding", count: offCount },
+    { key: "mytasks", label: "My Tasks", count: myCount },
+    isAdmin && { key: "employees", label: "Employees" },
+    isAdmin && { key: "templates", label: "Templates" },
+    isAdmin && { key: "reports", label: "Reports" },
+    isAdmin && { key: "setup", label: "Setup" },
+  ].filter(Boolean);
+
+  return (
+    <DataCtx.Provider value={ctxValue}>
+      <div style={S.page}>
+        <Header user={{ name: me?.Title, email: currentEmail }} role={role} onLogout={logout} />
+        <TabBar tabs={tabs} active={tab} onChange={setTab} />
+        <div style={S.content}>
+          {loadErr && <div style={{ background: C.erb, color: C.er, padding: 10, borderRadius: 4, fontSize: 12, marginBottom: 14 }}>{loadErr} <button onClick={reload} style={{ ...S.btnO(C.er, C.er), ...S.xs, marginLeft: 8 }}>Retry</button></div>}
+          {loading && state.journeys.length === 0 ? <div style={{ ...S.card, textAlign: "center", color: C.b4, padding: 40 }}>Loading data from SharePoint…</div> :
+            tab === "onboarding" ? <JourneysTab type="Onboarding" /> :
+            tab === "offboarding" ? <JourneysTab type="Offboarding" /> :
+            tab === "mytasks" ? <MyTasksTab /> :
+            tab === "employees" ? <EmployeesTab /> :
+            tab === "templates" ? <TemplatesTab /> :
+            tab === "reports" ? <ReportsTab /> :
+            tab === "setup" ? <SetupTab /> : null}
+        </div>
+        {editTaskId && <TaskEditModal taskId={editTaskId} onClose={() => setEditTaskId(null)} />}
+        {openJourneyId && <JourneyDetailModal journeyId={openJourneyId} onClose={() => setOpenJourneyId(null)} />}
+      </div>
+    </DataCtx.Provider>
+  );
+}

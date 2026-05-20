@@ -578,7 +578,7 @@ function JourneyDetailModal({ journeyId, onClose }) {
   if (!j) return null;
   const emp = state.employees.find(e => (e.Email || "").toLowerCase() === (j.EmployeeEmail || "").toLowerCase());
   const tasks = state.journeyTasks.filter(t => String(t.JourneyId) === String(j.id))
-    .sort((a, b) => (a.OrderIdx || 0) - (b.OrderIdx || 0) || (a.DueDate || "").localeCompare(b.DueDate || ""));
+    .sort((a, b) => (a.OffsetDays || 0) - (b.OffsetDays || 0) || (a.DueDate || "").localeCompare(b.DueDate || "") || (a.OrderIdx || 0) - (b.OrderIdx || 0));
   const phases = uniq(tasks.map(t => t.Phase || "General"));
   const canEdit = role === "Admin" || role === "HR" || (emp && (emp.ManagerEmail || "").toLowerCase() === (currentEmail || "").toLowerCase());
 
@@ -705,7 +705,9 @@ function StartJourneyModal({ type, onClose }) {
   const [saving, setSaving] = useState(false);
   const [warn, setWarn] = useState("");
 
-  const usableTemplates = state.templates.filter(t => t.JourneyType === type && t.Active !== false);
+  const usableTemplates = state.templates
+    .filter(t => t.JourneyType === type && t.Active !== false)
+    .sort((a, b) => (a.OffsetDays || 0) - (b.OffsetDays || 0) || (a.Title || "").localeCompare(b.Title || ""));
 
   const onPickEmployee = (id) => {
     if (!id) { setF({ ...f, existingEmpId: "", EmployeeEmail: "", EmployeeName: "", JobTitle: "", ManagerEmail: "" }); return; }
@@ -927,7 +929,7 @@ function TemplatesTab() {
   const [filter, setFilter] = useState("Onboarding");
   const canEdit = role === "Admin" || role === "HR";
 
-  const visible = state.templates.filter(t => t.JourneyType === filter).sort((a, b) => (a.Phase || "").localeCompare(b.Phase || "") || (a.OffsetDays || 0) - (b.OffsetDays || 0));
+  const visible = state.templates.filter(t => t.JourneyType === filter).sort((a, b) => (a.OffsetDays || 0) - (b.OffsetDays || 0) || (a.Title || "").localeCompare(b.Title || ""));
 
   const seedDefaults = async () => {
     if (!confirm(`Seed ${DEFAULT_TEMPLATES.length} default templates? This adds to existing templates, it does not replace them.`)) return;

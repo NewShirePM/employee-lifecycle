@@ -1838,6 +1838,7 @@ function App() {
   const { acct, token, login, logout, refresh, err: authErr, ready } = useMsal();
   const [state, setState] = useState({ employees: [], journeys: [], templates: [], journeyTasks: [], config: {}, apps: [], notes: [], audit: [] });
   const [loading, setLoading] = useState(false);
+  const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
   const [loadErr, setLoadErr] = useState(null);
   const [tab, setTab] = useState("onboarding");
   const [editTaskId, setEditTaskId] = useState(null);
@@ -1853,7 +1854,7 @@ function App() {
   const reload = useCallback(async () => {
     if (!token) return;
     setLoading(true); setLoadErr(null);
-    try { const d = await loadAll(token); setState(d); }
+    try { const d = await loadAll(token); setState(d); setHasLoadedOnce(true); }
     catch (e) { setLoadErr(e.message); }
     finally { setLoading(false); }
   }, [token]);
@@ -1976,7 +1977,8 @@ function App() {
         <TabBar tabs={tabs} active={tab} onChange={setTab} />
         <div style={S.content}>
           {loadErr && <div style={{ background: C.erb, color: C.er, padding: 10, borderRadius: 4, fontSize: 12, marginBottom: 14 }}>{loadErr} <button onClick={reload} style={{ ...S.btnO(C.er, C.er), ...S.xs, marginLeft: 8 }}>Retry</button></div>}
-          {loading && state.journeys.length === 0 ? <div style={{ ...S.card, textAlign: "center", color: C.b4, padding: 40 }}>Loading data from SharePoint…</div> :
+          {loading && hasLoadedOnce && <div style={{ position: "fixed", top: 60, right: 18, background: C.t0, color: C.t7, fontSize: 11, fontWeight: 600, padding: "5px 10px", borderRadius: 99, border: `1px solid ${C.t1}`, zIndex: 50 }}>Reloading…</div>}
+          {!hasLoadedOnce && loading ? <div style={{ ...S.card, textAlign: "center", color: C.b4, padding: 40 }}>Loading data from SharePoint…</div> :
             tab === "onboarding" ? <JourneysTab type="Onboarding" /> :
             tab === "offboarding" ? <JourneysTab type="Offboarding" /> :
             tab === "mytasks" ? <MyTasksTab /> :

@@ -11,15 +11,20 @@ const CONFIG = {
   tenantId: "33575d04-ca7b-4396-8011-9eaea4030b46",
   siteId: "vanrockre.sharepoint.com,a02c1cd8-9f1f-4827-8286-7b6b7ce74232,01202419-6625-4499-b0d5-8ceb1cffdba3",
   appName: "EMPLOYEE LIFECYCLE",
-  version: "0.1.0",
+  version: "0.2.0",
   lists: {
-    employees:           "Employees",            // shared, read-only here
-    journeys:            "ELC_Journeys",         // one row per onboarding/offboarding instance
-    templateTasks:       "ELC_TemplateTasks",    // task templates by phase/role
-    journeyTasks:        "ELC_JourneyTasks",     // per-journey task rows
-    config:              "ELC_Config",           // single-row config (ConfigJSON)
+    employees:           "Employees",            // shared
+    journeys:            "ELC_Journeys",
+    templateTasks:       "ELC_TemplateTasks",
+    journeyTasks:        "ELC_JourneyTasks",
+    config:              "ELC_Config",
+    apps:                "ELC_Apps",              // registry of NewShire apps + their per-app role columns
+    notes:               "ELC_EmployeeNotes",     // coaching / discipline / PIP / 1:1 / praise
+    audit:               "ELC_PermissionAudit",   // log of every per-app role change
+    files:               "ELC_EmployeeFiles",     // SharePoint document library
   },
   adminEmails: ["bturner@newshirepm.com"],
+  filesLibraryUrl: "https://vanrockre.sharepoint.com/ELC_EmployeeFiles",
 };
 
 const GRAPH = "https://graph.microsoft.com/v1.0";
@@ -278,20 +283,48 @@ const useData = () => useContext(DataCtx);
 // ============================================================
 // LOADER
 // ============================================================
+// ============================================================
+// DEFAULT APPS REGISTRY — fallback if ELC_Apps list is empty
+// ============================================================
+const DEFAULT_APPS = [
+  { Title: "VA Tracker",          AppKey: "vatracker",  ColumnName: "VATrackerRole",  Roles: ["VA","Manager","Regional","Admin"],        IconLetter: "V", Color: "#3A6577", Active: true, OrderIdx: 10, OnboardingDefault: "None",     Description: "Productivity tracker for virtual assistants" },
+  { Title: "PM Hub",              AppKey: "pmhub",      ColumnName: "PMHubRole",       Roles: ["PM","Regional","Owner","Admin"],          IconLetter: "P", Color: "#1C3740", Active: true, OrderIdx: 20, OnboardingDefault: "None",     Description: "Property manager activity & help queue" },
+  { Title: "NewShire University", AppKey: "university", ColumnName: "UniversityRole",  Roles: ["Employee","Manager","Admin"],             IconLetter: "U", Color: "#CDA04B", Active: true, OrderIdx: 30, OnboardingDefault: "Employee", Description: "Training, courses, compliance learning paths" },
+  { Title: "Expense Manager",     AppKey: "expense",    ColumnName: "ExpenseRole",     Roles: ["Employee","Accounting","Admin"],          IconLetter: "E", Color: "#2D8A5A", Active: true, OrderIdx: 40, OnboardingDefault: "Employee", Description: "Mileage & expense reimbursement" },
+  { Title: "CAHP Compliance Hub", AppKey: "cahp",       ColumnName: "CAHPRole",        Roles: ["Viewer","Editor","Admin"],                IconLetter: "C", Color: "#4A78B0", Active: true, OrderIdx: 50, OnboardingDefault: "None",     Description: "Affordable housing compliance tracker" },
+  { Title: "AppFolio Dashboard",  AppKey: "appfolio",   ColumnName: "AppFolioRole",    Roles: ["Viewer","Editor","Admin"],                IconLetter: "A", Color: "#B8922E", Active: true, OrderIdx: 60, OnboardingDefault: "None",     Description: "NewShire AppFolio analytics dashboard" },
+  { Title: "ShowMojo Sync",       AppKey: "showmojo",   ColumnName: "ShowMojoRole",    Roles: ["Viewer","Editor","Admin"],                IconLetter: "S", Color: "#5B3FA8", Active: true, OrderIdx: 70, OnboardingDefault: "None",     Description: "ShowMojo listing/showings sync" },
+  { Title: "Renewal Manager",     AppKey: "renewal",    ColumnName: "RenewalRole",     Roles: ["Viewer","Editor","Admin"],                IconLetter: "R", Color: "#C44B3B", Active: true, OrderIdx: 80, OnboardingDefault: "None",     Description: "Lease renewal workflow & tracking" },
+  { Title: "Employee Lifecycle",  AppKey: "elc",        ColumnName: "ELCRole",         Roles: ["Employee","Manager","HR","IT","Admin"],   IconLetter: "L", Color: "#CDA04B", Active: true, OrderIdx: 90, OnboardingDefault: "Employee", Description: "Onboarding / offboarding / HR file system" },
+];
+function normalizeApp(raw) {
+  let roles = raw.Roles;
+  if (typeof roles === "string") { try { roles = JSON.parse(roles); } catch { roles = roles.split(",").map(s => s.trim()).filter(Boolean); } }
+  if (!Array.isArray(roles)) roles = [];
+  return { ...raw, Roles: roles };
+}
+
 async function loadAll(token) {
-  const [emp, jrn, tpl, jt, cfg] = await Promise.all([
+  const [emp, jrn, tpl, jt, cfg, apps, notes, audit] = await Promise.all([
     safeGet(token, "Employees",      `${lUrl(CONFIG.lists.employees)}?expand=fields&$top=500`),
     safeGet(token, "Journeys",       `${lUrl(CONFIG.lists.journeys)}?expand=fields&$top=500`),
     safeGet(token, "TemplateTasks",  `${lUrl(CONFIG.lists.templateTasks)}?expand=fields&$top=500`),
     safeGet(token, "JourneyTasks",   `${lUrl(CONFIG.lists.journeyTasks)}?expand=fields&$top=2000`),
     safeGet(token, "Config",         `${lUrl(CONFIG.lists.config)}?expand=fields&$top=5`),
+    safeGet(token, "Apps",           `${lUrl(CONFIG.lists.apps)}?expand=fields&$top=100`),
+    safeGet(token, "Notes",          `${lUrl(CONFIG.lists.notes)}?expand=fields&$top=2000`),
+    safeGet(token, "Audit",          `${lUrl(CONFIG.lists.audit)}?expand=fields&$top=2000`),
   ]);
-  const employees = emp.map(e => ({ id: e.id, ...e.fields })).filter(e => e.EmployeeActive !== false || true /* keep all for offboarding lookups */);
+  const employees = emp.map(e => ({ id: e.id, ...e.fields }));
   const journeys = jrn.map(j => ({ id: j.id, ...j.fields }));
   const templates = tpl.map(t => ({ id: t.id, ...t.fields }));
   const journeyTasks = jt.map(t => ({ id: t.id, ...t.fields }));
+  let appsList = apps.map(a => normalizeApp({ id: a.id, ...a.fields })).filter(a => a.Active !== false).sort((a, b) => (a.OrderIdx || 0) - (b.OrderIdx || 0));
+  if (appsList.length === 0) appsList = DEFAULT_APPS.map((a, i) => ({ ...a, id: `default-${i}` }));
+  const notesList = notes.map(n => ({ id: n.id, ...n.fields }));
+  const auditList = audit.map(a => ({ id: a.id, ...a.fields }));
   const config = cfg.length > 0 ? (() => { try { return JSON.parse(cfg[0].fields.ConfigJSON || "{}"); } catch { return {}; } })() : {};
-  return { employees, journeys, templates, journeyTasks, config };
+  return { employees, journeys, templates, journeyTasks, config, apps: appsList, notes: notesList, audit: auditList };
 }
 
 // ============================================================
@@ -638,10 +671,19 @@ function TaskEditModal({ taskId, onClose }) {
 // ============================================================
 function StartJourneyModal({ type, onClose }) {
   const { state, actions, currentEmail } = useData();
+  const isOnboarding = type === "Onboarding";
+  // Multi-step wizard for onboarding (Profile → Permissions → Confirm); offboarding is single-step
+  const [step, setStep] = useState(1);
   const [f, setF] = useState({
     EmployeeEmail: "", EmployeeName: "", JobTitle: "", ManagerEmail: "",
-    Department: "", StartDate: type === "Onboarding" ? todayIso() : "", EndDate: type === "Offboarding" ? todayIso() : "",
-    Notes: "", existingEmpId: "",
+    Department: "", StartDate: isOnboarding ? todayIso() : "", EndDate: !isOnboarding ? todayIso() : "",
+    Notes: "", existingEmpId: "", OffboardReason: "",
+  });
+  // Permission selections: { ColumnName: roleValue }
+  const [perms, setPerms] = useState(() => {
+    const o = {};
+    for (const a of state.apps) o[a.ColumnName] = a.OnboardingDefault && a.OnboardingDefault !== "None" ? (a.OnboardingDefault === "Lowest" ? (a.Roles?.[0] || "") : a.OnboardingDefault === "Standard" ? (a.Roles?.[0] || "") : a.OnboardingDefault) : "";
+    return o;
   });
   const [saving, setSaving] = useState(false);
   const [warn, setWarn] = useState("");
@@ -653,19 +695,43 @@ function StartJourneyModal({ type, onClose }) {
     const e = state.employees.find(x => String(x.id) === String(id));
     if (!e) return;
     setF({ ...f, existingEmpId: id, EmployeeEmail: (e.Email || "").toLowerCase(), EmployeeName: e.Title || "", JobTitle: e.JobTitle || "", ManagerEmail: (e.ManagerEmail || "").toLowerCase(), Department: e.Department || f.Department });
+    // Pre-populate permissions from existing record (for re-onboarding/transfer)
+    if (isOnboarding) {
+      const o = { ...perms };
+      for (const a of state.apps) if (e[a.ColumnName]) o[a.ColumnName] = e[a.ColumnName];
+      setPerms(o);
+    }
+  };
+
+  const validateStep1 = () => {
+    if (!f.EmployeeEmail) return "Employee email is required.";
+    if (isOnboarding && !f.EmployeeName) return "Full name is required for new hires.";
+    if (isOnboarding && !f.StartDate) return "Start date is required.";
+    if (!isOnboarding && !f.EndDate) return "Last day is required.";
+    return null;
   };
 
   const submit = async () => {
     setWarn("");
-    if (!f.EmployeeEmail) return setWarn("Employee email is required.");
-    if (type === "Onboarding" && !f.StartDate) return setWarn("Start date is required.");
-    if (type === "Offboarding" && !f.EndDate) return setWarn("Last day is required.");
+    const v = validateStep1(); if (v) { setStep(1); return setWarn(v); }
     const dup = state.journeys.find(j => j.JourneyType === type && (j.EmployeeEmail || "").toLowerCase() === f.EmployeeEmail.toLowerCase() && j.Status !== "Complete" && j.Status !== "Cancelled");
     if (dup) { if (!confirm(`An active ${type.toLowerCase()} journey already exists for this employee. Create another anyway?`)) return; }
 
     setSaving(true);
     try {
-      const anchor = type === "Offboarding" ? f.EndDate : f.StartDate;
+      const anchor = !isOnboarding ? f.EndDate : f.StartDate;
+      // 1. Upsert employee on onboarding (creates Employees row if new)
+      if (isOnboarding) {
+        await actions.upsertEmployee({
+          Title: f.EmployeeName,
+          Email: f.EmployeeEmail.toLowerCase(),
+          JobTitle: f.JobTitle,
+          ManagerEmail: (f.ManagerEmail || "").toLowerCase(),
+          Department: f.Department,
+          EmployeeActive: true,
+        });
+      }
+      // 2. Create the journey
       const jrn = await actions.createJourney({
         JourneyType: type,
         EmployeeEmail: f.EmployeeEmail.toLowerCase(),
@@ -677,9 +743,18 @@ function StartJourneyModal({ type, onClose }) {
         EndDate: f.EndDate || "",
         Status: "In Progress",
         Notes: f.Notes,
+        OffboardReason: !isOnboarding ? f.OffboardReason : "",
         CreatedBy: currentEmail,
       });
-      // Create tasks from templates
+      // 3. Set permissions (onboarding) with audit log against the new journey
+      if (isOnboarding) {
+        const cleanPerms = {};
+        for (const [k, v2] of Object.entries(perms)) if (v2) cleanPerms[k] = v2;
+        if (Object.keys(cleanPerms).length > 0) {
+          await actions.setEmployeePermissions(f.EmployeeEmail.toLowerCase(), cleanPerms, "Initial onboarding permissions", String(jrn.id));
+        }
+      }
+      // 4. Create tasks from templates
       let idx = 0;
       for (const tpl of usableTemplates) {
         idx++;
@@ -707,45 +782,120 @@ function StartJourneyModal({ type, onClose }) {
     } finally { setSaving(false); }
   };
 
+  const steps = isOnboarding ? [
+    { n: 1, label: "Employee" },
+    { n: 2, label: "App Permissions" },
+    { n: 3, label: "Confirm" },
+  ] : [{ n: 1, label: "Details" }];
+
   return (
-    <Modal title={`Start ${type}`} onClose={onClose} width={620} footer={
+    <Modal title={`Start ${type}`} onClose={onClose} width={720} footer={
       <>
+        {step > 1 && <button style={S.btnO()} onClick={() => setStep(step - 1)} disabled={saving}>Back</button>}
         <button style={S.btnO()} onClick={onClose} disabled={saving}>Cancel</button>
-        <button style={S.btn(C.hdr)} onClick={submit} disabled={saving}>{saving ? "Creating…" : `Start ${type}`}</button>
+        {isOnboarding && step < 3
+          ? <button style={S.btn(C.hdr)} onClick={() => { const v = step === 1 ? validateStep1() : null; if (v) return setWarn(v); setWarn(""); setStep(step + 1); }} disabled={saving}>Next →</button>
+          : <button style={S.btn(C.hdr)} onClick={submit} disabled={saving}>{saving ? "Creating…" : `Start ${type}`}</button>}
       </>
     }>
-      <div style={{ display: "grid", gap: 12 }}>
-        <div>
-          <label style={S.label}>Existing employee (optional)</label>
-          <select style={S.select} value={f.existingEmpId} onChange={e => onPickEmployee(e.target.value)}>
-            <option value="">— New / not in list —</option>
-            {state.employees.filter(e => e.Email).sort((a, b) => (a.Title || "").localeCompare(b.Title || "")).map(e => (
-              <option key={e.id} value={e.id}>{e.Title} — {e.Email}</option>
-            ))}
-          </select>
+      {/* Stepper */}
+      {isOnboarding && (
+        <div style={{ display: "flex", gap: 6, marginBottom: 14 }}>
+          {steps.map(s => (
+            <div key={s.n} style={{ flex: 1, padding: "8px 10px", borderRadius: 4, background: s.n === step ? C.hdr : s.n < step ? C.t1 : C.b1, color: s.n === step ? "#fff" : s.n < step ? C.t7 : C.b4, fontSize: 12, fontWeight: 600, textAlign: "center" }}>
+              <span style={{ opacity: 0.6, marginRight: 6 }}>{s.n}</span>{s.label}
+            </div>
+          ))}
         </div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-          <div><label style={S.label}>Full Name</label><input style={S.input} value={f.EmployeeName} onChange={e => setF({ ...f, EmployeeName: e.target.value })} /></div>
-          <div><label style={S.label}>Email *</label><input style={S.input} value={f.EmployeeEmail} onChange={e => setF({ ...f, EmployeeEmail: e.target.value.toLowerCase() })} placeholder="name@newshirepm.com" /></div>
-        </div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-          <div><label style={S.label}>Job Title</label><input style={S.input} value={f.JobTitle} onChange={e => setF({ ...f, JobTitle: e.target.value })} /></div>
-          <div><label style={S.label}>Department</label><input style={S.input} value={f.Department} onChange={e => setF({ ...f, Department: e.target.value })} /></div>
-        </div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-          <div><label style={S.label}>Manager Email</label><input style={S.input} value={f.ManagerEmail} onChange={e => setF({ ...f, ManagerEmail: e.target.value.toLowerCase() })} /></div>
-          {type === "Onboarding" ? (
-            <div><label style={S.label}>Start Date *</label><input style={S.input} type="date" value={f.StartDate} onChange={e => setF({ ...f, StartDate: e.target.value })} /></div>
-          ) : (
-            <div><label style={S.label}>Last Day *</label><input style={S.input} type="date" value={f.EndDate} onChange={e => setF({ ...f, EndDate: e.target.value })} /></div>
+      )}
+
+      {/* STEP 1 — Employee details */}
+      {step === 1 && (
+        <div style={{ display: "grid", gap: 12 }}>
+          <div>
+            <label style={S.label}>{isOnboarding ? "Existing employee (rehire/transfer)" : "Select active employee *"}</label>
+            <select style={S.select} value={f.existingEmpId} onChange={e => onPickEmployee(e.target.value)}>
+              <option value="">{isOnboarding ? "— New hire —" : "— Pick an employee —"}</option>
+              {state.employees
+                .filter(e => e.Email)
+                .filter(e => isOnboarding || e.EmployeeActive !== false)
+                .sort((a, b) => (a.Title || "").localeCompare(b.Title || ""))
+                .map(e => (<option key={e.id} value={e.id}>{e.Title} — {e.Email}</option>))}
+            </select>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <div><label style={S.label}>Full Name {isOnboarding && "*"}</label><input style={S.input} value={f.EmployeeName} onChange={e => setF({ ...f, EmployeeName: e.target.value })} /></div>
+            <div><label style={S.label}>Email *</label><input style={S.input} value={f.EmployeeEmail} disabled={!isOnboarding && !!f.existingEmpId} onChange={e => setF({ ...f, EmployeeEmail: e.target.value.toLowerCase() })} placeholder="name@newshirepm.com" /></div>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <div><label style={S.label}>Job Title</label><input style={S.input} value={f.JobTitle} onChange={e => setF({ ...f, JobTitle: e.target.value })} /></div>
+            <div><label style={S.label}>Department</label><input style={S.input} value={f.Department} onChange={e => setF({ ...f, Department: e.target.value })} /></div>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <div><label style={S.label}>Manager Email</label><input style={S.input} value={f.ManagerEmail} onChange={e => setF({ ...f, ManagerEmail: e.target.value.toLowerCase() })} /></div>
+            {isOnboarding ? (
+              <div><label style={S.label}>Start Date *</label><input style={S.input} type="date" value={f.StartDate} onChange={e => setF({ ...f, StartDate: e.target.value })} /></div>
+            ) : (
+              <div><label style={S.label}>Last Day *</label><input style={S.input} type="date" value={f.EndDate} onChange={e => setF({ ...f, EndDate: e.target.value })} /></div>
+            )}
+          </div>
+          {!isOnboarding && (
+            <div><label style={S.label}>Reason for offboarding</label>
+              <select style={S.select} value={f.OffboardReason} onChange={e => setF({ ...f, OffboardReason: e.target.value })}>
+                <option value="">—</option>
+                <option>Resignation</option><option>Retirement</option><option>End of Contract</option>
+                <option>Termination — Performance</option><option>Termination — Misconduct</option>
+                <option>Layoff / Position Eliminated</option><option>Other</option>
+              </select>
+            </div>
+          )}
+          <div><label style={S.label}>Notes</label><textarea style={S.textarea} value={f.Notes} onChange={e => setF({ ...f, Notes: e.target.value })} placeholder="Anything the team needs to know" /></div>
+          {!isOnboarding && (
+            <div style={{ background: C.infb, border: `1px solid ${C.inf}33`, borderRadius: 4, padding: 10, fontSize: 12, color: C.inf }}>
+              This will create <strong>{usableTemplates.length}</strong> offboarding task{usableTemplates.length === 1 ? "" : "s"} (offsets from the last day). The employee's app permissions will be reviewable on the Last Day tasks.
+            </div>
           )}
         </div>
-        <div><label style={S.label}>Notes</label><textarea style={S.textarea} value={f.Notes} onChange={e => setF({ ...f, Notes: e.target.value })} placeholder="Anything the team needs to know" /></div>
-        <div style={{ background: C.infb, border: `1px solid ${C.inf}33`, borderRadius: 4, padding: 10, fontSize: 12, color: C.inf }}>
-          This will create <strong>{usableTemplates.length}</strong> task{usableTemplates.length === 1 ? "" : "s"} from the <strong>{type}</strong> template, due dates offset from the {type === "Offboarding" ? "last day" : "start date"}.
+      )}
+
+      {/* STEP 2 — Permissions (onboarding only) */}
+      {isOnboarding && step === 2 && (
+        <div style={{ display: "grid", gap: 12 }}>
+          <div style={{ background: C.infb, border: `1px solid ${C.inf}33`, borderRadius: 4, padding: 10, fontSize: 12, color: C.inf }}>
+            Choose which NewShire apps this employee needs access to and what role each gets. <strong>None</strong> = no access. You can change any of these later from the employee's profile.
+          </div>
+          {state.apps.length === 0
+            ? <Empty title="No apps registered" sub="Run the provisioning script (or add rows to ELC_Apps) to populate the registry." />
+            : <PermissionMatrix apps={state.apps} values={perms} onChange={(col, v) => setPerms({ ...perms, [col]: v })} />}
         </div>
-        {warn && <div style={{ background: C.erb, color: C.er, padding: 10, borderRadius: 4, fontSize: 12 }}>{warn}</div>}
-      </div>
+      )}
+
+      {/* STEP 3 — Confirm (onboarding only) */}
+      {isOnboarding && step === 3 && (
+        <div style={{ display: "grid", gap: 10 }}>
+          <div style={S.card}>
+            <div style={S.sec}>New Hire</div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: C.t7 }}>{f.EmployeeName} <span style={{ fontWeight: 400, color: C.b4 }}>· {f.EmployeeEmail}</span></div>
+            <div style={{ fontSize: 12, color: C.b4 }}>{f.JobTitle || "—"}{f.Department ? ` · ${f.Department}` : ""} · Manager: {f.ManagerEmail || "—"} · Starts {fmtDate(f.StartDate)}</div>
+          </div>
+          <div style={S.card}>
+            <div style={S.sec}>App Permissions</div>
+            {Object.entries(perms).filter(([, v]) => v).length === 0 ? <div style={{ fontSize: 12, color: C.b4 }}>No app permissions selected.</div> : (
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                {Object.entries(perms).filter(([, v]) => v).map(([col, role]) => {
+                  const app = state.apps.find(a => a.ColumnName === col);
+                  return <Badge key={col} type="inf">{app?.Title || col}: {role}</Badge>;
+                })}
+              </div>
+            )}
+          </div>
+          <div style={{ background: C.g0, border: `1px dashed ${C.g4}`, borderRadius: 4, padding: 10, fontSize: 12, color: C.g7 }}>
+            On submit: ① {f.existingEmpId ? "Update" : "Add"} <strong>{f.EmployeeName}</strong> in the Employees list. ② Set the {Object.values(perms).filter(Boolean).length} app permission(s) above (audit-logged). ③ Generate {usableTemplates.length} onboarding tasks from the active template.
+          </div>
+        </div>
+      )}
+
+      {warn && <div style={{ background: C.erb, color: C.er, padding: 10, borderRadius: 4, fontSize: 12, marginTop: 12 }}>{warn}</div>}
     </Modal>
   );
 }
@@ -917,7 +1067,361 @@ function TaskRow({ t }) {
 }
 
 // ============================================================
-// EMPLOYEES TAB (Admin / HR)
+// PERMISSION MATRIX — reusable: onboarding wizard + employee detail
+// ============================================================
+function PermissionMatrix({ apps, values, onChange, disabled, dense }) {
+  return (
+    <div style={{ display: "grid", gap: dense ? 6 : 8 }}>
+      {apps.map(a => {
+        const cur = values[a.ColumnName] || "None";
+        const choices = ["None", ...(a.Roles || [])];
+        return (
+          <div key={a.AppKey} style={{ display: "grid", gridTemplateColumns: "32px 1fr 160px", alignItems: "center", gap: 10, padding: dense ? "6px 8px" : "8px 10px", border: `1px solid ${cur === "None" ? C.b1 : C.t1}`, background: cur === "None" ? C.wh : C.t0, borderRadius: 6 }}>
+            <div style={{ width: 28, height: 28, background: a.Color || C.t5, color: "#fff", borderRadius: 5, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: 13, fontFamily: "Georgia,serif" }}>{a.IconLetter || a.Title?.[0] || "?"}</div>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontWeight: 600, color: C.t7, fontSize: 13 }}>{a.Title}</div>
+              {a.Description && !dense && <div style={{ fontSize: 11, color: C.b4 }}>{a.Description}</div>}
+            </div>
+            <select style={S.select} disabled={disabled} value={cur} onChange={e => onChange(a.ColumnName, e.target.value)}>
+              {choices.map(c => <option key={c} value={c === "None" ? "" : c}>{c}</option>)}
+            </select>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ============================================================
+// NOTE EDIT MODAL — coaching, discipline, PIP, 1:1, praise, …
+// ============================================================
+const NOTE_TYPE_COLORS = {
+  Coaching: "inf", Discipline: "er", Praise: "ok", PIP: "wn",
+  "1:1": "neutral", Termination: "er", "Policy Acknowledgement": "neutral", General: "neutral",
+};
+function NoteEditModal({ noteId, forEmail, onClose }) {
+  const { state, actions, currentEmail } = useData();
+  const existing = noteId ? state.notes.find(n => String(n.id) === String(noteId)) : null;
+  const [f, setF] = useState(() => existing ? { ...existing } : {
+    EmployeeEmail: forEmail || "",
+    NoteType: "Coaching",
+    NoteDate: todayIso(),
+    Body: "",
+    Confidential: true,
+    VisibleToManager: true,
+    VisibleToEmployee: false,
+    Status: "Open",
+    Severity: "Info",
+    FollowUpDate: "",
+    AttachmentLinks: "",
+    Title: "",
+  });
+  const [saving, setSaving] = useState(false);
+  const isEdit = !!existing;
+
+  const save = async () => {
+    if (!f.EmployeeEmail) return alert("Employee email is required.");
+    if (!f.Body) return alert("Note body is required.");
+    setSaving(true);
+    try {
+      const payload = { ...f, Title: f.Title || `${f.NoteType} — ${fmtDate(f.NoteDate || todayIso())}` };
+      if (isEdit) await actions.updateNote(noteId, payload);
+      else await actions.createNote(payload);
+      onClose();
+    } catch (e) { alert("Save failed: " + e.message); } finally { setSaving(false); }
+  };
+  const del = async () => {
+    if (!confirm("Delete this note? This cannot be undone.")) return;
+    setSaving(true);
+    try { await actions.deleteNote(noteId); onClose(); } catch (e) { alert("Delete failed: " + e.message); } finally { setSaving(false); }
+  };
+
+  return (
+    <Modal title={isEdit ? "Edit Note" : "New Note"} width={680} onClose={onClose} footer={
+      <>
+        {isEdit && <button style={S.btnO(C.er, C.er)} onClick={del} disabled={saving}>Delete</button>}
+        <button style={S.btnO()} onClick={onClose} disabled={saving}>Cancel</button>
+        <button style={S.btn(C.hdr)} onClick={save} disabled={saving}>{saving ? "Saving…" : "Save"}</button>
+      </>
+    }>
+      <div style={{ display: "grid", gap: 12 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+          <div><label style={S.label}>Type</label>
+            <select style={S.select} value={f.NoteType} onChange={e => setF({ ...f, NoteType: e.target.value })}>
+              {["Coaching","Discipline","Praise","PIP","1:1","Termination","Policy Acknowledgement","General"].map(t => <option key={t}>{t}</option>)}
+            </select>
+          </div>
+          <div><label style={S.label}>Date</label><input style={S.input} type="date" value={f.NoteDate || ""} onChange={e => setF({ ...f, NoteDate: e.target.value })} /></div>
+          <div><label style={S.label}>Severity</label>
+            <select style={S.select} value={f.Severity || "Info"} onChange={e => setF({ ...f, Severity: e.target.value })}>
+              {["Info","Low","Medium","High","Critical"].map(t => <option key={t}>{t}</option>)}
+            </select>
+          </div>
+        </div>
+        <div><label style={S.label}>Title (optional)</label><input style={S.input} value={f.Title || ""} placeholder="auto-generated if blank" onChange={e => setF({ ...f, Title: e.target.value })} /></div>
+        <div><label style={S.label}>Body *</label><textarea style={{ ...S.textarea, minHeight: 140 }} value={f.Body || ""} onChange={e => setF({ ...f, Body: e.target.value })} placeholder="What happened, observations, conversation, agreed next steps…" /></div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <div><label style={S.label}>Status</label>
+            <select style={S.select} value={f.Status || "Open"} onChange={e => setF({ ...f, Status: e.target.value })}>
+              {["Open","In Progress","Resolved","Escalated"].map(t => <option key={t}>{t}</option>)}
+            </select>
+          </div>
+          <div><label style={S.label}>Follow-up Date</label><input style={S.input} type="date" value={f.FollowUpDate || ""} onChange={e => setF({ ...f, FollowUpDate: e.target.value })} /></div>
+        </div>
+        <div><label style={S.label}>Attachment Links (one per line)</label><textarea style={S.textarea} value={f.AttachmentLinks || ""} onChange={e => setF({ ...f, AttachmentLinks: e.target.value })} placeholder="https://vanrockre.sharepoint.com/.../filename.pdf" /></div>
+        <div style={{ display: "flex", gap: 18, flexWrap: "wrap", fontSize: 13 }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 6 }}><input type="checkbox" checked={!!f.Confidential} onChange={e => setF({ ...f, Confidential: e.target.checked })} /> Confidential</label>
+          <label style={{ display: "flex", alignItems: "center", gap: 6 }}><input type="checkbox" checked={!!f.VisibleToManager} onChange={e => setF({ ...f, VisibleToManager: e.target.checked })} /> Visible to manager</label>
+          <label style={{ display: "flex", alignItems: "center", gap: 6 }}><input type="checkbox" checked={!!f.VisibleToEmployee} onChange={e => setF({ ...f, VisibleToEmployee: e.target.checked })} /> Visible to employee</label>
+        </div>
+        <div style={{ fontSize: 11, color: C.b4 }}>Author: <strong>{existing?.AuthorEmail || currentEmail}</strong></div>
+      </div>
+    </Modal>
+  );
+}
+
+// ============================================================
+// EMPLOYEE DETAIL MODAL — Profile, Permissions, Notes, Coaching, Files, Journeys
+// ============================================================
+function EmployeeDetailModal({ email, onClose }) {
+  const { state, actions, role, currentEmail } = useData();
+  const emp = state.employees.find(e => (e.Email || "").toLowerCase() === email);
+  const [sub, setSub] = useState("profile");
+  const [saving, setSaving] = useState(false);
+  const [permDraft, setPermDraft] = useState({});
+  const [permReason, setPermReason] = useState("");
+  const [profileDraft, setProfileDraft] = useState(() => emp ? { Title: emp.Title || "", JobTitle: emp.JobTitle || "", Email: emp.Email || "", ManagerEmail: emp.ManagerEmail || "", Department: emp.Department || "", EmployeeActive: emp.EmployeeActive !== false } : { EmployeeActive: true });
+  const canEdit = role === "Admin" || role === "HR";
+
+  const journeys = useMemo(() => emp ? state.journeys.filter(j => (j.EmployeeEmail || "").toLowerCase() === email).sort((a, b) => (b.Modified || "").localeCompare(a.Modified || "")) : [], [emp, state.journeys, email]);
+  const notes    = useMemo(() => emp ? state.notes.filter(n => (n.EmployeeEmail || "").toLowerCase() === email).sort((a, b) => (b.NoteDate || "").localeCompare(a.NoteDate || "")) : [], [emp, state.notes, email]);
+  const audit    = useMemo(() => emp ? state.audit.filter(a => (a.EmployeeEmail || "").toLowerCase() === email).sort((a, b) => (b.ChangedAt || "").localeCompare(a.ChangedAt || "")) : [], [emp, state.audit, email]);
+
+  // Coaching aggregation — must run unconditionally to satisfy rules-of-hooks
+  const coaching = useMemo(() => {
+    if (!emp) return { trainingDone: 0, expenseSubmits: 0, vaActivities: 0, overdueTasks: 0 };
+    const trainingDone   = 0; // future: pull from TrainingCompletions
+    const expenseSubmits = 0; // future: pull from Expense Log
+    const vaActivities   = 0; // future: pull from VA_Activity
+    const overdueTasks   = state.journeyTasks.filter(t => journeys.some(j => String(j.id) === String(t.JourneyId)) && classifyDue(t.DueDate, t.Status) === "overdue").length;
+    return { trainingDone, expenseSubmits, vaActivities, overdueTasks };
+  }, [emp, state.journeyTasks, journeys]);
+
+  // Initialise perm draft on email change
+  useEffect(() => {
+    if (!emp) return;
+    const initial = {};
+    for (const a of state.apps) initial[a.ColumnName] = emp[a.ColumnName] || "";
+    setPermDraft(initial);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [email, emp ? emp.id : null]);
+
+  if (!emp) return (
+    <Modal title="Employee" onClose={onClose}><Empty title="Not found" sub={`No employee in the Employees list matches ${email}`} /></Modal>
+  );
+
+  const permChanged = Object.entries(permDraft).some(([k, v]) => (emp[k] || "") !== (v || ""));
+  const savePerms = async () => {
+    setSaving(true);
+    try { await actions.setEmployeePermissions(email, permDraft, permReason, null); setPermReason(""); }
+    catch (e) { alert("Save failed: " + e.message); }
+    finally { setSaving(false); }
+  };
+  const saveProfile = async () => {
+    setSaving(true);
+    try {
+      await actions.upsertEmployee({ ...profileDraft, Email: emp.Email });
+      onClose();
+    } catch (e) { alert("Save failed: " + e.message); }
+    finally { setSaving(false); }
+  };
+
+  const SubTab = ({ k, label, count }) => (
+    <button onClick={() => setSub(k)} style={{ ...S.tab(sub === k), padding: "9px 13px", fontSize: 12, minHeight: 38 }}>
+      {label}{typeof count === "number" && count > 0 && <span style={{ marginLeft: 6, background: sub === k ? C.g1 : C.b1, color: sub === k ? C.g7 : C.b4, fontSize: 10, fontWeight: 700, padding: "1px 7px", borderRadius: 99 }}>{count}</span>}
+    </button>
+  );
+
+  return (
+    <Modal width={920} title={null} onClose={onClose} footer={null}>
+      <div style={{ marginTop: -18, marginLeft: -18, marginRight: -18, padding: "14px 18px", background: `linear-gradient(135deg, ${C.hdr} 0%, ${C.t6} 100%)`, color: "#fff", display: "flex", alignItems: "center", gap: 14 }}>
+        <Avatar name={emp.Title} size={48} color={{ bg: C.g5, fg: C.t7 }} />
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 18, fontWeight: 700 }}>{emp.Title || emp.Email}</div>
+          <div style={{ fontSize: 12, color: C.t1 }}>{emp.JobTitle || ""} {emp.Department ? `· ${emp.Department}` : ""}</div>
+          <div style={{ fontSize: 11, color: C.g4, marginTop: 2 }}>{emp.Email} {emp.ManagerEmail ? `· Manager: ${emp.ManagerEmail}` : ""}</div>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 4, alignItems: "flex-end" }}>
+          {emp.EmployeeActive === false ? <Badge type="neutral">Inactive</Badge> : <Badge type="ok">Active</Badge>}
+          {journeys[0] && journeys[0].Status !== "Complete" && journeys[0].Status !== "Cancelled" && <Badge type={journeys[0].JourneyType === "Onboarding" ? "inf" : "wn"}>{journeys[0].JourneyType}</Badge>}
+        </div>
+      </div>
+      <div style={{ marginLeft: -18, marginRight: -18, borderBottom: `1px solid ${C.b1}`, padding: "0 18px", display: "flex", overflowX: "auto" }}>
+        <SubTab k="profile"      label="Profile" />
+        <SubTab k="permissions"  label="App Permissions" count={state.apps.filter(a => (emp[a.ColumnName] || "None") !== "None" && emp[a.ColumnName]).length} />
+        <SubTab k="notes"        label="Notes & Discipline" count={notes.length} />
+        <SubTab k="coaching"     label="Coaching" />
+        <SubTab k="journeys"     label="Journeys" count={journeys.length} />
+        <SubTab k="files"        label="Files" />
+        {canEdit && <SubTab k="audit" label="Audit" count={audit.length} />}
+      </div>
+      <div style={{ paddingTop: 16, maxHeight: "calc(100vh - 280px)", overflowY: "auto" }}>
+        {sub === "profile" && (
+          <div style={{ display: "grid", gap: 12 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              <div><label style={S.label}>Full Name</label><input style={S.input} disabled={!canEdit} value={profileDraft.Title || ""} onChange={e => setProfileDraft({ ...profileDraft, Title: e.target.value })} /></div>
+              <div><label style={S.label}>Email</label><input style={S.input} disabled value={profileDraft.Email || ""} /></div>
+              <div><label style={S.label}>Job Title</label><input style={S.input} disabled={!canEdit} value={profileDraft.JobTitle || ""} onChange={e => setProfileDraft({ ...profileDraft, JobTitle: e.target.value })} /></div>
+              <div><label style={S.label}>Department</label><input style={S.input} disabled={!canEdit} value={profileDraft.Department || ""} onChange={e => setProfileDraft({ ...profileDraft, Department: e.target.value })} /></div>
+              <div><label style={S.label}>Manager Email</label><input style={S.input} disabled={!canEdit} value={profileDraft.ManagerEmail || ""} onChange={e => setProfileDraft({ ...profileDraft, ManagerEmail: e.target.value.toLowerCase() })} /></div>
+              <div><label style={S.label}>Status</label>
+                <select style={S.select} disabled={!canEdit} value={profileDraft.EmployeeActive ? "active" : "inactive"} onChange={e => setProfileDraft({ ...profileDraft, EmployeeActive: e.target.value === "active" })}>
+                  <option value="active">Active</option><option value="inactive">Inactive</option>
+                </select>
+              </div>
+            </div>
+            {canEdit && <div style={{ display: "flex", justifyContent: "flex-end" }}><button style={S.btn(C.hdr)} disabled={saving} onClick={saveProfile}>{saving ? "Saving…" : "Save Profile"}</button></div>}
+          </div>
+        )}
+        {sub === "permissions" && (
+          <div style={{ display: "grid", gap: 12 }}>
+            <div style={{ background: C.infb, border: `1px solid ${C.inf}33`, borderRadius: 4, padding: 10, fontSize: 12, color: C.inf }}>
+              Set the role this employee has in each NewShire app. <strong>None</strong> means they have no access. Changes are saved with an audit entry.
+            </div>
+            <PermissionMatrix apps={state.apps} values={permDraft} disabled={!canEdit} onChange={(col, v) => setPermDraft({ ...permDraft, [col]: v })} />
+            {canEdit && (
+              <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 10, alignItems: "end" }}>
+                <div><label style={S.label}>Reason for change (optional)</label><input style={S.input} value={permReason} placeholder="e.g. promotion, new responsibility, etc." onChange={e => setPermReason(e.target.value)} /></div>
+                <button style={S.btn(C.hdr)} disabled={!permChanged || saving} onClick={savePerms}>{saving ? "Saving…" : "Save Permissions"}</button>
+              </div>
+            )}
+            {audit.length > 0 && (
+              <div style={{ marginTop: 8 }}>
+                <div style={S.sec}>Recent changes</div>
+                {audit.slice(0, 5).map(a => (
+                  <div key={a.id} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderBottom: `1px solid ${C.b1}`, fontSize: 12 }}>
+                    <span><strong>{a.AppKey}</strong>: <span style={{ color: C.b4 }}>{a.OldRole}</span> → <strong style={{ color: C.t7 }}>{a.NewRole}</strong></span>
+                    <span style={{ color: C.b4 }}>{a.ChangedBy} · {fmtDate(a.ChangedAt)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+        {sub === "notes" && (
+          <div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                {Object.entries(notes.reduce((m, n) => { m[n.NoteType || "General"] = (m[n.NoteType || "General"] || 0) + 1; return m; }, {})).map(([t, n]) => (
+                  <Badge key={t} type={NOTE_TYPE_COLORS[t] || "neutral"}>{t} · {n}</Badge>
+                ))}
+              </div>
+              {canEdit && <button style={S.btn(C.hdr)} onClick={() => actions.openNoteNew(email)}>+ New Note</button>}
+            </div>
+            {notes.length === 0 ? <Empty title="No notes yet" sub={canEdit ? "Add the first one." : "Nothing on file."} /> : notes.map(n => (
+              <div key={n.id} style={{ background: C.wh, border: `1px solid ${C.b1}`, borderRadius: 6, padding: 12, marginBottom: 10 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                    <Badge type={NOTE_TYPE_COLORS[n.NoteType] || "neutral"}>{n.NoteType}</Badge>
+                    {n.Severity && n.Severity !== "Info" && <Badge type={n.Severity === "Critical" || n.Severity === "High" ? "er" : "wn"}>{n.Severity}</Badge>}
+                    {n.Status && n.Status !== "Open" && <Badge type={n.Status === "Resolved" ? "ok" : "neutral"}>{n.Status}</Badge>}
+                    {n.Confidential && <Badge type="neutral">🔒 Confidential</Badge>}
+                    <span style={{ fontSize: 12, color: C.b4 }}>{fmtDate(n.NoteDate)} · by {n.AuthorEmail}</span>
+                  </div>
+                  {canEdit && <button style={{ ...S.btnO(C.t5), ...S.xs }} onClick={() => actions.openNoteEdit(n.id)}>Edit</button>}
+                </div>
+                {n.Title && <div style={{ fontWeight: 600, color: C.t7, marginBottom: 4 }}>{n.Title}</div>}
+                <div style={{ whiteSpace: "pre-wrap", fontSize: 13, color: C.t7 }}>{n.Body}</div>
+                {n.FollowUpDate && <div style={{ marginTop: 8, fontSize: 11, color: C.wn }}>Follow-up: {fmtDate(n.FollowUpDate)}</div>}
+                {n.AttachmentLinks && (
+                  <div style={{ marginTop: 8, fontSize: 11 }}>
+                    {n.AttachmentLinks.split(/\r?\n/).filter(Boolean).map((u, i) => <div key={i}><a href={u} target="_blank" rel="noreferrer" style={{ color: C.inf }}>{u}</a></div>)}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+        {sub === "coaching" && (
+          <div>
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
+              <div style={S.kpi}><div style={S.kpiL}>Notes (90d)</div><div style={S.kpiV}>{notes.filter(n => n.NoteDate && (Date.now() - new Date(n.NoteDate).getTime()) / 86400000 <= 90).length}</div></div>
+              <div style={S.kpi}><div style={S.kpiL}>Open Disciplinary</div><div style={{ ...S.kpiV, color: notes.filter(n => n.NoteType === "Discipline" && n.Status !== "Resolved").length > 0 ? C.er : C.t7 }}>{notes.filter(n => n.NoteType === "Discipline" && n.Status !== "Resolved").length}</div></div>
+              <div style={S.kpi}><div style={S.kpiL}>Praise (12mo)</div><div style={{ ...S.kpiV, color: C.ok }}>{notes.filter(n => n.NoteType === "Praise" && n.NoteDate && (Date.now() - new Date(n.NoteDate).getTime()) / 86400000 <= 365).length}</div></div>
+              <div style={S.kpi}><div style={S.kpiL}>Overdue Tasks</div><div style={{ ...S.kpiV, color: coaching.overdueTasks > 0 ? C.wn : C.t7 }}>{coaching.overdueTasks}</div></div>
+            </div>
+            <div style={S.card}>
+              <div style={S.cardT}>Cross-app activity</div>
+              <div style={{ fontSize: 12, color: C.b4, marginBottom: 8 }}>Aggregated coaching data from other NewShire apps. Each row reads from the source app's SharePoint lists.</div>
+              <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                <thead><tr><th style={S.th}>Source</th><th style={S.th}>Metric</th><th style={S.th}>Value</th><th style={S.th}>Last 30d</th></tr></thead>
+                <tbody>
+                  <tr><td style={S.td}>NewShire University</td><td style={S.td}>Trainings completed</td><td style={S.td}>{coaching.trainingDone}</td><td style={S.td}><span style={{ color: C.b4 }}>—</span></td></tr>
+                  <tr><td style={S.td}>VA Tracker</td><td style={S.td}>Activity logged (hrs)</td><td style={S.td}>{coaching.vaActivities}</td><td style={S.td}><span style={{ color: C.b4 }}>—</span></td></tr>
+                  <tr><td style={S.td}>Expense Manager</td><td style={S.td}>Reports submitted</td><td style={S.td}>{coaching.expenseSubmits}</td><td style={S.td}><span style={{ color: C.b4 }}>—</span></td></tr>
+                  <tr><td style={S.td}>PM Hub</td><td style={S.td}>Help requests opened</td><td style={S.td}><span style={{ color: C.b4 }}>—</span></td><td style={S.td}><span style={{ color: C.b4 }}>—</span></td></tr>
+                </tbody>
+              </table>
+              <div style={{ marginTop: 10, padding: 10, background: C.g0, border: `1px dashed ${C.g4}`, borderRadius: 4, fontSize: 11, color: C.g7 }}>
+                <strong>Wiring TODO:</strong> Add per-app list-read functions in <code style={{ fontFamily: mono }}>loadAll()</code> and aggregate by EmployeeEmail. Each app already keys its lists by email, so this is mostly mapping work.
+              </div>
+            </div>
+          </div>
+        )}
+        {sub === "journeys" && (
+          <div>
+            {journeys.length === 0 ? <Empty title="No journeys" sub="This employee has no onboarding/offboarding history yet." /> : journeys.map(j => {
+              const p = journeyProgress(j, state.journeyTasks);
+              return (
+                <div key={j.id} style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 12, padding: 12, border: `1px solid ${C.b1}`, borderRadius: 6, marginBottom: 8, alignItems: "center" }}>
+                  <div>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 4 }}>
+                      <Badge type={j.JourneyType === "Onboarding" ? "inf" : "wn"}>{j.JourneyType}</Badge>
+                      <Badge type={j.Status === "Complete" ? "ok" : j.Status === "Cancelled" ? "neutral" : "inf"}>{j.Status}</Badge>
+                    </div>
+                    <div style={{ fontSize: 12, color: C.b4 }}>{fmtDate(journeyAnchorDate(j))} · {p.done}/{p.total} tasks ({p.pct}%)</div>
+                    <ProgressBar value={p.pct} />
+                  </div>
+                  <button style={S.btnO(C.t5)} onClick={() => { onClose(); actions.openJourney(j.id); }}>Open</button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+        {sub === "files" && (
+          <div>
+            <div style={S.card}>
+              <div style={S.cardT}>Employee Documents</div>
+              <div style={{ fontSize: 13, marginBottom: 10 }}>Files are stored in SharePoint at <code style={{ fontFamily: mono, fontSize: 12 }}>ELC_EmployeeFiles/{email}/</code></div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <a href={`${CONFIG.filesLibraryUrl}/Forms/AllItems.aspx?viewpath=%2FELC%5FEmployeeFiles%2FForms%2FAllItems%2Easpx&FilterField1=EmployeeEmail&FilterValue1=${encodeURIComponent(email)}`} target="_blank" rel="noreferrer" style={S.btn(C.hdr)}>Open in SharePoint</a>
+                <a href={`${CONFIG.filesLibraryUrl}/${encodeURIComponent(email)}`} target="_blank" rel="noreferrer" style={S.btnO(C.t5)}>Open Employee Folder</a>
+              </div>
+              <div style={{ marginTop: 12, fontSize: 11, color: C.b4 }}>
+                Typical contents: offer letter, signed handbook, W-4 / I-9, performance reviews, disciplinary docs, exit paperwork. Tag each file with <code>DocCategory</code> in SharePoint.
+              </div>
+            </div>
+          </div>
+        )}
+        {sub === "audit" && canEdit && (
+          <div>
+            {audit.length === 0 ? <Empty title="No permission changes recorded yet" sub="Audit entries appear here when you change any app role." /> : (
+              <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                <thead><tr><th style={S.th}>When</th><th style={S.th}>App</th><th style={S.th}>Old → New</th><th style={S.th}>By</th><th style={S.th}>Reason</th></tr></thead>
+                <tbody>{audit.map(a => (
+                  <tr key={a.id}><td style={S.td}>{fmtDate(a.ChangedAt)}</td><td style={S.td}>{a.AppKey}</td><td style={S.td}><span style={{ color: C.b4 }}>{a.OldRole}</span> → <strong>{a.NewRole}</strong></td><td style={S.td}>{a.ChangedBy}</td><td style={S.td}>{a.Reason || "—"}</td></tr>
+                ))}</tbody>
+              </table>
+            )}
+          </div>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+// ============================================================
+// EMPLOYEES TAB (Admin / HR) — click row to open detail
 // ============================================================
 function EmployeesTab() {
   const { state, actions } = useData();
@@ -929,6 +1433,8 @@ function EmployeesTab() {
     .sort((a, b) => (a.Title || "").localeCompare(b.Title || ""));
 
   const byEmail = (email) => state.journeys.find(j => (j.EmployeeEmail || "").toLowerCase() === (email || "").toLowerCase() && j.Status !== "Complete" && j.Status !== "Cancelled");
+  const permCount = (e) => state.apps.filter(a => (e[a.ColumnName] || "None") !== "None" && e[a.ColumnName]).length;
+  const noteCount = (e) => state.notes.filter(n => (n.EmployeeEmail || "").toLowerCase() === (e.Email || "").toLowerCase()).length;
 
   return (
     <div>
@@ -942,18 +1448,21 @@ function EmployeesTab() {
         </div>
         <div style={{ overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <thead><tr><th style={S.th}>Name</th><th style={S.th}>Title</th><th style={S.th}>Email</th><th style={S.th}>Manager</th><th style={S.th}>Status</th><th style={S.th}>Active Journey</th></tr></thead>
+            <thead><tr><th style={S.th}>Name</th><th style={S.th}>Title</th><th style={S.th}>Manager</th><th style={S.th}>Apps</th><th style={S.th}>Notes</th><th style={S.th}>Status</th><th style={S.th}>Active Journey</th></tr></thead>
             <tbody>
               {employees.map(e => {
                 const j = byEmail(e.Email);
                 return (
-                  <tr key={e.id}>
+                  <tr key={e.id} style={{ cursor: "pointer" }} onClick={() => actions.openEmployee(e.Email)}
+                      onMouseEnter={ev => ev.currentTarget.style.background = C.t0}
+                      onMouseLeave={ev => ev.currentTarget.style.background = ""}>
                     <td style={S.td}><div style={{ display: "flex", alignItems: "center", gap: 8 }}><Avatar name={e.Title} size={28} /><div style={{ fontWeight: 600, color: C.t7 }}>{e.Title}</div></div></td>
                     <td style={S.td}>{e.JobTitle || "—"}</td>
-                    <td style={S.td}>{e.Email}</td>
                     <td style={S.td}>{e.ManagerEmail || "—"}</td>
+                    <td style={S.td}><Badge type={permCount(e) > 0 ? "inf" : "neutral"}>{permCount(e)}</Badge></td>
+                    <td style={S.td}><Badge type={noteCount(e) > 0 ? "wn" : "neutral"}>{noteCount(e)}</Badge></td>
                     <td style={S.td}>{e.EmployeeActive === false ? <Badge type="neutral">Inactive</Badge> : <Badge type="ok">Active</Badge>}</td>
-                    <td style={S.td}>{j ? <button style={{ ...S.btnO(C.t5), ...S.xs }} onClick={() => actions.openJourney(j.id)}><Badge type={j.JourneyType === "Onboarding" ? "inf" : "wn"}>{j.JourneyType}</Badge> · {fmtDate(journeyAnchorDate(j))}</button> : <span style={{ color: C.b4 }}>—</span>}</td>
+                    <td style={S.td} onClick={ev => ev.stopPropagation()}>{j ? <button style={{ ...S.btnO(C.t5), ...S.xs }} onClick={() => actions.openJourney(j.id)}><Badge type={j.JourneyType === "Onboarding" ? "inf" : "wn"}>{j.JourneyType}</Badge> · {fmtDate(journeyAnchorDate(j))}</button> : <span style={{ color: C.b4 }}>—</span>}</td>
                   </tr>
                 );
               })}
@@ -1019,13 +1528,29 @@ function ReportsTab() {
 // SETUP / DIAGNOSTICS — first-run helper
 // ============================================================
 function SetupTab() {
-  const { state } = useData();
+  const { state, actions } = useData();
+  const [seedingApps, setSeedingApps] = useState(false);
+  const realApps = state.apps.filter(a => !String(a.id).startsWith("default-"));
   const checks = [
-    { label: `${CONFIG.lists.employees} list`, ok: state.employees.length > 0, hint: "Should already exist (shared list)." },
-    { label: `${CONFIG.lists.journeys} list`, ok: state.journeys.length > 0 || true /* empty is fine */, hint: "Create this list in SharePoint." },
-    { label: `${CONFIG.lists.templateTasks} list (has templates)`, ok: state.templates.length > 0, hint: "Use the Templates tab → 'Seed defaults'." },
-    { label: `${CONFIG.lists.journeyTasks} list`, ok: state.journeyTasks.length >= 0, hint: "Create this list in SharePoint." },
+    { label: `${CONFIG.lists.employees} list`,      ok: state.employees.length > 0, hint: "Shared list — should already exist." },
+    { label: `${CONFIG.lists.journeys} list`,       ok: true, hint: "Provisioned by scripts/provision-lists.ps1." },
+    { label: `${CONFIG.lists.templateTasks} list (has templates)`, ok: state.templates.length > 0, hint: "Templates tab → 'Seed defaults' to load NewShire's starter task set." },
+    { label: `${CONFIG.lists.journeyTasks} list`,   ok: true, hint: "Provisioned." },
+    { label: `${CONFIG.lists.apps} registry (has app rows)`, ok: realApps.length > 0, hint: "Defines which NewShire apps appear in the Permissions matrix." },
+    { label: `${CONFIG.lists.notes} list`,          ok: true, hint: "Stores coaching, discipline, PIP, 1:1, praise notes." },
+    { label: `${CONFIG.lists.audit} list`,          ok: true, hint: "Audit trail of permission changes." },
+    { label: `${CONFIG.lists.files} document library`, ok: true, hint: "Per-employee HR documents." },
   ];
+
+  const seedApps = async () => {
+    if (!confirm(`Seed ${DEFAULT_APPS.length} default apps into the registry?`)) return;
+    setSeedingApps(true);
+    try {
+      for (const a of DEFAULT_APPS) await actions.createApp(a);
+      await actions.reload();
+    } catch (e) { alert("Seed failed: " + e.message); } finally { setSeedingApps(false); }
+  };
+
   const Row = ({ label, ok, hint }) => (
     <div style={{ display: "grid", gridTemplateColumns: "auto 1fr auto", gap: 10, alignItems: "center", padding: "10px 0", borderBottom: `1px solid ${C.b1}` }}>
       <div style={{ fontSize: 18 }}>{ok ? "✅" : "⚠️"}</div>
@@ -1033,19 +1558,54 @@ function SetupTab() {
       <Badge type={ok ? "ok" : "wn"}>{ok ? "ok" : "set up"}</Badge>
     </div>
   );
+
   return (
     <div>
       <div style={S.card}>
         <div style={S.cardT}>Setup checklist</div>
         {checks.map(c => <Row key={c.label} {...c} />)}
-        <div style={{ marginTop: 14, fontSize: 12, color: C.b4 }}>
-          <strong>Required SharePoint Lists</strong> on the NewShire site (Graph paths: <code style={{ fontFamily: mono }}>sites/{CONFIG.siteId.split(",")[1].slice(0, 8)}…/lists/&lt;name&gt;</code>):
+      </div>
+
+      <div style={S.card}>
+        <div style={S.cardT}><span>Apps Registry</span>
+          {realApps.length === 0 && <button style={S.btnO(C.t5)} disabled={seedingApps} onClick={seedApps}>{seedingApps ? "Seeding…" : "Seed defaults"}</button>}
+        </div>
+        <div style={{ fontSize: 12, color: C.b4, marginBottom: 8 }}>
+          Each row maps a NewShire app to the column on the <strong>Employees</strong> list that stores per-app role. The provisioning script also creates that column (Choice with the listed roles + 'None').
+        </div>
+        {state.apps.length === 0 ? <Empty title="No apps registered" sub="Click 'Seed defaults' or add rows to ELC_Apps." /> : (
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead><tr><th style={S.th}></th><th style={S.th}>App</th><th style={S.th}>Employees Column</th><th style={S.th}>Roles</th><th style={S.th}>Default on Hire</th></tr></thead>
+            <tbody>
+              {state.apps.map(a => (
+                <tr key={a.id}>
+                  <td style={S.td}><div style={{ width: 26, height: 26, background: a.Color || C.t5, color: "#fff", borderRadius: 4, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontFamily: "Georgia,serif" }}>{a.IconLetter || a.Title?.[0]}</div></td>
+                  <td style={S.td}><div style={{ fontWeight: 600 }}>{a.Title}</div><div style={{ fontSize: 11, color: C.b4 }}>{a.AppKey}</div></td>
+                  <td style={S.td}><code style={{ fontFamily: mono, fontSize: 12 }}>{a.ColumnName}</code></td>
+                  <td style={S.td}><div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>{(a.Roles || []).map(r => <Badge key={r} type="neutral">{r}</Badge>)}</div></td>
+                  <td style={S.td}>{a.OnboardingDefault || "None"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      <div style={S.card}>
+        <div style={S.cardT}>Required SharePoint Lists</div>
+        <div style={{ fontSize: 12, color: C.b4, lineHeight: 1.6 }}>
+          Run <code style={{ fontFamily: mono }}>scripts/provision-lists.ps1</code> once from the repo root to create everything:
           <ul style={{ marginLeft: 18, marginTop: 6, lineHeight: 1.8 }}>
-            <li><strong>ELC_Journeys</strong> — Title (single line), JourneyType, EmployeeEmail, EmployeeName, JobTitle, ManagerEmail, Department, StartDate (Date), EndDate (Date), Status, Notes (Multi line), CreatedBy</li>
-            <li><strong>ELC_TemplateTasks</strong> — Title, JourneyType, Phase, AssigneeRole, OffsetDays (Number), Required (Yes/No), Active (Yes/No), Notes (Multi line)</li>
-            <li><strong>ELC_JourneyTasks</strong> — Title, JourneyId, EmployeeEmail, Phase, AssigneeRole, AssigneeEmail, DueDate (Date), OffsetDays (Number), Required (Yes/No), Status, Notes (Multi line), CompletedDate (Date), CompletedBy, OrderIdx (Number), TemplateId</li>
-            <li><strong>ELC_Config</strong> — Title, ConfigJSON (Multi line)</li>
+            <li><strong>ELC_Journeys</strong> — one row per onboarding/offboarding instance</li>
+            <li><strong>ELC_TemplateTasks</strong> — reusable task templates by phase/role</li>
+            <li><strong>ELC_JourneyTasks</strong> — materialised tasks per journey</li>
+            <li><strong>ELC_Config</strong> — single-row JSON settings</li>
+            <li><strong>ELC_Apps</strong> — NewShire app registry (this controls the Permissions matrix)</li>
+            <li><strong>ELC_EmployeeNotes</strong> — coaching, discipline, PIP, 1:1, praise</li>
+            <li><strong>ELC_PermissionAudit</strong> — audit log of every permission change</li>
+            <li><strong>ELC_EmployeeFiles</strong> — SharePoint document library (folder per employee)</li>
           </ul>
+          The script also adds a Choice column on the <strong>Employees</strong> list for each registered app (e.g. <code style={{ fontFamily: mono }}>VATrackerRole</code>, <code style={{ fontFamily: mono }}>PMHubRole</code>).
         </div>
       </div>
     </div>
@@ -1057,12 +1617,15 @@ function SetupTab() {
 // ============================================================
 function App() {
   const { acct, token, login, logout, refresh, err: authErr, ready } = useMsal();
-  const [state, setState] = useState({ employees: [], journeys: [], templates: [], journeyTasks: [], config: {} });
+  const [state, setState] = useState({ employees: [], journeys: [], templates: [], journeyTasks: [], config: {}, apps: [], notes: [], audit: [] });
   const [loading, setLoading] = useState(false);
   const [loadErr, setLoadErr] = useState(null);
   const [tab, setTab] = useState("onboarding");
   const [editTaskId, setEditTaskId] = useState(null);
   const [openJourneyId, setOpenJourneyId] = useState(null);
+  const [openEmployeeEmail, setOpenEmployeeEmail] = useState(null);
+  const [editNoteId, setEditNoteId] = useState(null);
+  const [newNoteFor, setNewNoteFor] = useState(null);
 
   const currentEmail = (acct?.username || "").toLowerCase();
   const me = state.employees.find(e => (e.Email || "").toLowerCase() === currentEmail);
@@ -1090,6 +1653,9 @@ function App() {
     reload,
     openTaskEdit: id => setEditTaskId(id),
     openJourney: id => setOpenJourneyId(id),
+    openEmployee: email => setOpenEmployeeEmail((email || "").toLowerCase()),
+    openNoteEdit: id => setEditNoteId(id),
+    openNoteNew: email => setNewNoteFor((email || "").toLowerCase()),
     createJourney: async (fields) => withToken(async tk => {
       const r = await gPost(tk, lUrl(CONFIG.lists.journeys), { Title: `${fields.JourneyType} — ${fields.EmployeeName || fields.EmployeeEmail}`, ...fields });
       return { id: r.id, ...r.fields };
@@ -1110,7 +1676,59 @@ function App() {
     createTemplate: async (fields) => withToken(async tk => { await gPost(tk, lUrl(CONFIG.lists.templateTasks), { Title: fields.Title, ...fields }); }),
     updateTemplate: async (id, patch) => withToken(async tk => { await gPatch(tk, iUrl(CONFIG.lists.templateTasks, id), patch); }),
     deleteTemplate: async (id) => withToken(async tk => { await gDelete(tk, `${SITE}/lists/${CONFIG.lists.templateTasks}/items/${id}`); }),
-  }), [withToken, reload]);
+
+    // ── Employees (upsert) ──
+    upsertEmployee: async (fields) => withToken(async tk => {
+      const email = (fields.Email || "").toLowerCase();
+      const existing = state.employees.find(e => (e.Email || "").toLowerCase() === email);
+      if (existing) {
+        const patch = { ...fields };
+        await gPatch(tk, iUrl(CONFIG.lists.employees, existing.id), patch);
+        return { id: existing.id, ...existing, ...patch };
+      }
+      const r = await gPost(tk, lUrl(CONFIG.lists.employees), { Title: fields.Title || fields.Name || email, ...fields, EmployeeActive: true });
+      return { id: r.id, ...r.fields };
+    }),
+    setEmployeePermissions: async (employeeEmail, perms, reason, journeyId) => withToken(async tk => {
+      const email = (employeeEmail || "").toLowerCase();
+      const existing = state.employees.find(e => (e.Email || "").toLowerCase() === email);
+      if (!existing) throw new Error(`Employee not found: ${email}`);
+      const patch = {}; const audits = [];
+      for (const [col, newRole] of Object.entries(perms)) {
+        const oldRole = existing[col] || "None";
+        if ((newRole || "None") === oldRole) continue;
+        patch[col] = newRole || "None";
+        const app = state.apps.find(a => a.ColumnName === col);
+        audits.push({ EmployeeEmail: email, AppKey: app?.AppKey || col, OldRole: oldRole, NewRole: newRole || "None", ChangedBy: currentEmail, ChangedAt: new Date().toISOString(), Reason: reason || "", JourneyId: journeyId || "" });
+      }
+      if (Object.keys(patch).length > 0) {
+        await gPatch(tk, iUrl(CONFIG.lists.employees, existing.id), patch);
+      }
+      for (const a of audits) {
+        await gPost(tk, lUrl(CONFIG.lists.audit), { Title: `${a.AppKey}: ${a.OldRole} → ${a.NewRole}`, ...a }).catch(e => console.warn("audit log failed:", e.message));
+      }
+      setState(s => ({ ...s, employees: s.employees.map(e => String(e.id) === String(existing.id) ? { ...e, ...patch } : e), audit: [...s.audit, ...audits.map((a, i) => ({ id: `local-${Date.now()}-${i}`, ...a }))] }));
+    }),
+
+    // ── Notes / Discipline ──
+    createNote: async (fields) => withToken(async tk => {
+      const r = await gPost(tk, lUrl(CONFIG.lists.notes), { Title: fields.Title || `${fields.NoteType} — ${fields.EmployeeEmail}`, AuthorEmail: currentEmail, NoteDate: fields.NoteDate || todayIso(), ...fields });
+      setState(s => ({ ...s, notes: [...s.notes, { id: r.id, ...r.fields }] }));
+      return r;
+    }),
+    updateNote: async (id, patch) => withToken(async tk => {
+      await gPatch(tk, iUrl(CONFIG.lists.notes, id), patch);
+      setState(s => ({ ...s, notes: s.notes.map(n => String(n.id) === String(id) ? { ...n, ...patch } : n) }));
+    }),
+    deleteNote: async (id) => withToken(async tk => {
+      await gDelete(tk, `${SITE}/lists/${CONFIG.lists.notes}/items/${id}`);
+      setState(s => ({ ...s, notes: s.notes.filter(n => String(n.id) !== String(id)) }));
+    }),
+
+    // ── Apps registry ──
+    updateApp: async (id, patch) => withToken(async tk => { await gPatch(tk, iUrl(CONFIG.lists.apps, id), patch); }),
+    createApp:  async (fields) => withToken(async tk => { await gPost(tk, lUrl(CONFIG.lists.apps), { Title: fields.Title, ...fields, Roles: typeof fields.Roles === "string" ? fields.Roles : JSON.stringify(fields.Roles || []) }); }),
+  }), [withToken, reload, state.employees, state.apps, currentEmail]);
 
   const ctxValue = { state, actions, role, currentEmail, me };
 
@@ -1150,6 +1768,8 @@ function App() {
         </div>
         {editTaskId && <TaskEditModal taskId={editTaskId} onClose={() => setEditTaskId(null)} />}
         {openJourneyId && <JourneyDetailModal journeyId={openJourneyId} onClose={() => setOpenJourneyId(null)} />}
+        {openEmployeeEmail && <EmployeeDetailModal email={openEmployeeEmail} onClose={() => setOpenEmployeeEmail(null)} />}
+        {(editNoteId || newNoteFor) && <NoteEditModal noteId={editNoteId} forEmail={newNoteFor} onClose={() => { setEditNoteId(null); setNewNoteFor(null); }} />}
       </div>
     </DataCtx.Provider>
   );

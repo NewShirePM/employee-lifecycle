@@ -382,9 +382,15 @@ function Empty({ title, sub }) { return <div style={{ textAlign: "center", paddi
 // ============================================================
 // ROLE DETECTION
 // ============================================================
+// Role precedence:
+//   1. CONFIG.adminEmails  (super-admin failsafe — can't be locked out)
+//   2. ELCRole column on Employees (set via App Permissions UI) ← canonical
+//   3. Legacy AccessLevel / JobTitle heuristics (for first-run before ELCRole is set)
+const VALID_ELC_ROLES = new Set(["Admin", "HR", "IT", "Manager", "Employee"]);
 function detectRole(emp, email) {
   if (CONFIG.adminEmails.includes((email || "").toLowerCase())) return "Admin";
   if (!emp) return "Employee";
+  if (emp.ELCRole && emp.ELCRole !== "None" && VALID_ELC_ROLES.has(emp.ELCRole)) return emp.ELCRole;
   const al = (emp.AccessLevel || "").toLowerCase();
   if (al.includes("admin") || al.includes("owner")) return "Admin";
   const title = (emp.JobTitle || "").toLowerCase();
@@ -1459,10 +1465,12 @@ function EmployeesTab() {
         </div>
         <div style={{ overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <thead><tr><th style={S.th}>Name</th><th style={S.th}>Title</th><th style={S.th}>Manager</th><th style={S.th}>Apps</th><th style={S.th}>Notes</th><th style={S.th}>Status</th><th style={S.th}>Active Journey</th></tr></thead>
+            <thead><tr><th style={S.th}>Name</th><th style={S.th}>Title</th><th style={S.th}>Manager</th><th style={S.th}>ELC Role</th><th style={S.th}>Apps</th><th style={S.th}>Notes</th><th style={S.th}>Status</th><th style={S.th}>Active Journey</th></tr></thead>
             <tbody>
               {employees.map(e => {
                 const j = byEmail(e.Email);
+                const elcRole = e.ELCRole && e.ELCRole !== "None" ? e.ELCRole : null;
+                const roleBadgeType = elcRole === "Admin" ? "er" : elcRole === "HR" ? "pu" : elcRole === "IT" ? "inf" : elcRole === "Manager" ? "wn" : "neutral";
                 return (
                   <tr key={e.id} style={{ cursor: "pointer" }} onClick={() => actions.openEmployee(e.Email)}
                       onMouseEnter={ev => ev.currentTarget.style.background = C.t0}
@@ -1470,6 +1478,7 @@ function EmployeesTab() {
                     <td style={S.td}><div style={{ display: "flex", alignItems: "center", gap: 8 }}><Avatar name={e.Title} size={28} /><div style={{ fontWeight: 600, color: C.t7 }}>{e.Title}</div></div></td>
                     <td style={S.td}>{e.JobTitle || "—"}</td>
                     <td style={S.td}>{e.ManagerEmail || "—"}</td>
+                    <td style={S.td}>{elcRole ? <Badge type={roleBadgeType}>{elcRole}</Badge> : <span style={{ color: C.b4 }}>—</span>}</td>
                     <td style={S.td}><Badge type={permCount(e) > 0 ? "inf" : "neutral"}>{permCount(e)}</Badge></td>
                     <td style={S.td}><Badge type={noteCount(e) > 0 ? "wn" : "neutral"}>{noteCount(e)}</Badge></td>
                     <td style={S.td}>{e.EmployeeActive === false ? <Badge type="neutral">Inactive</Badge> : <Badge type="ok">Active</Badge>}</td>
@@ -1538,6 +1547,68 @@ function ReportsTab() {
 // ============================================================
 // SETUP / DIAGNOSTICS — first-run helper
 // ============================================================
+function AccessOverviewCard() {
+  const { state, actions, role, currentEmail } = useData();
+  const [saving, setSaving] = useState({});
+  const canEdit = role === "Admin";
+  const ELC_ROLES = ["Admin", "HR", "IT", "Manager", "Employee"];
+  const active = state.employees.filter(e => e.EmployeeActive !== false).sort((a, b) => (a.Title || "").localeCompare(b.Title || ""));
+  const byRole = ELC_ROLES.reduce((m, r) => { m[r] = active.filter(e => (e.ELCRole === r) || (!e.ELCRole && r === "Employee" && detectRole(e, e.Email) === "Employee") || (!e.ELCRole && detectRole(e, e.Email) === r)); return m; }, {});
+
+  const changeRole = async (email, newRole) => {
+    setSaving(s => ({ ...s, [email]: true }));
+    try { await actions.setEmployeePermissions(email, { ELCRole: newRole || "" }, "Set via Setup → Access overview", null); }
+    catch (e) { alert("Save failed: " + e.message); }
+    finally { setSaving(s => ({ ...s, [email]: false })); }
+  };
+
+  return (
+    <div style={S.card}>
+      <div style={S.cardT}>Access to this app</div>
+      <div style={{ fontSize: 12, color: C.b4, marginBottom: 10 }}>
+        Controls what each employee can do <em>inside</em> the Employee Lifecycle app. <strong>Admin</strong> can do anything. <strong>HR</strong> can run journeys, set permissions, and write notes. <strong>IT</strong> can complete IT-assigned tasks. <strong>Manager</strong> can see their reports' onboarding/offboarding. <strong>Employee</strong> only sees their own tasks. The super-admin <code style={{ fontFamily: mono }}>{CONFIG.adminEmails.join(", ")}</code> is always Admin regardless of this column.
+      </div>
+      <div style={{ display: "grid", gap: 6, marginBottom: 12 }}>
+        {ELC_ROLES.map(r => (
+          <div key={r} style={{ display: "grid", gridTemplateColumns: "100px 1fr", gap: 8, alignItems: "center", padding: "6px 0" }}>
+            <Badge type={r === "Admin" ? "er" : r === "HR" ? "pu" : r === "IT" ? "inf" : r === "Manager" ? "wn" : "neutral"}>{r}</Badge>
+            <div style={{ fontSize: 12, color: C.b6 }}>{byRole[r].length === 0 ? <em style={{ color: C.b4 }}>nobody</em> : byRole[r].map(e => e.Title).join(", ")}</div>
+          </div>
+        ))}
+      </div>
+      {canEdit && (
+        <div style={{ borderTop: `1px solid ${C.b1}`, paddingTop: 12 }}>
+          <div style={S.sec}>Set role</div>
+          <div style={{ maxHeight: 360, overflowY: "auto", border: `1px solid ${C.b1}`, borderRadius: 4 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead><tr><th style={S.th}>Employee</th><th style={S.th}>Current Title</th><th style={S.th}>Detected (fallback)</th><th style={S.th}>ELC Role</th></tr></thead>
+              <tbody>
+                {active.map(e => {
+                  const cur = e.ELCRole || "";
+                  const detected = detectRole({ ...e, ELCRole: null }, e.Email);
+                  return (
+                    <tr key={e.id}>
+                      <td style={S.td}><div style={{ fontWeight: 600 }}>{e.Title}</div><div style={{ fontSize: 11, color: C.b4 }}>{e.Email}</div></td>
+                      <td style={S.td}>{e.JobTitle || "—"}</td>
+                      <td style={S.td}><Badge type="neutral">{detected}</Badge></td>
+                      <td style={S.td}>
+                        <select style={{ ...S.select, width: 140 }} value={cur} disabled={!!saving[e.Email]} onChange={ev => changeRole(e.Email, ev.target.value)}>
+                          <option value="">— Use fallback —</option>
+                          {ELC_ROLES.map(r => <option key={r} value={r}>{r}</option>)}
+                        </select>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SetupTab() {
   const { state, actions } = useData();
   const [seedingApps, setSeedingApps] = useState(false);
@@ -1576,6 +1647,8 @@ function SetupTab() {
         <div style={S.cardT}>Setup checklist</div>
         {checks.map(c => <Row key={c.label} {...c} />)}
       </div>
+
+      <AccessOverviewCard />
 
       <div style={S.card}>
         <div style={S.cardT}><span>Apps Registry</span>

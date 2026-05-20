@@ -119,11 +119,22 @@ async function gAll(token, url) {
   }
   return out;
 }
+// Strip empty/undefined values — SharePoint rejects "" for Date/Number/Boolean
+// columns with "badArgument". Keeps false (Yes/No) and 0 (Number) intentionally.
+function cleanFields(fields) {
+  const out = {};
+  for (const [k, v] of Object.entries(fields || {})) {
+    if (v === undefined || v === null) continue;
+    if (typeof v === "string" && v.trim() === "") continue;
+    out[k] = v;
+  }
+  return out;
+}
 async function gPost(token, url, fields) {
   const r = await fetch(url, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ fields }),
+    body: JSON.stringify({ fields: cleanFields(fields) }),
   });
   if (!r.ok) throw new Error(`POST ${r.status} ${await r.text().catch(() => '')}`);
   return r.json();
@@ -132,9 +143,9 @@ async function gPatch(token, url, fields) {
   const r = await fetch(url, {
     method: "PATCH",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-    body: JSON.stringify(fields),
+    body: JSON.stringify(cleanFields(fields)),
   });
-  if (!r.ok) throw new Error(`PATCH ${r.status}`);
+  if (!r.ok) throw new Error(`PATCH ${r.status} ${await r.text().catch(() => '')}`);
   return r.json();
 }
 async function gDelete(token, url) {

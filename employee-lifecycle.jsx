@@ -2193,10 +2193,16 @@ function App() {
       if (existing) {
         const patch = { ...fields };
         await gPatch(tk, iUrl(CONFIG.lists.employees, existing.id), patch);
-        return { id: existing.id, ...existing, ...patch };
+        const updated = { ...existing, ...patch };
+        setState(s => ({ ...s, employees: s.employees.map(x => String(x.id) === String(existing.id) ? updated : x) }));
+        return updated;
       }
-      const r = await gPost(tk, lUrl(CONFIG.lists.employees), { Title: fields.Title || fields.Name || email, ...fields, EmployeeActive: true });
-      return { id: r.id, ...r.fields };
+      const newFields = { Title: fields.Title || fields.Name || email, ...fields };
+      if (newFields.EmployeeActive === undefined) newFields.EmployeeActive = true;
+      const r = await gPost(tk, lUrl(CONFIG.lists.employees), newFields);
+      const created = { id: r.id, ...r.fields };
+      setState(s => ({ ...s, employees: [...s.employees, created] }));
+      return created;
     }),
     setEmployeePermissions: async (employeeEmail, perms, reason, journeyId) => withToken(async tk => {
       const email = (employeeEmail || "").toLowerCase();

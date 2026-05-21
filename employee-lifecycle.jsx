@@ -103,6 +103,29 @@ const S = {
 };
 
 // ============================================================
+// META TEMPLATE GROUPS — auto-apply based on rules; not user-selectable
+// at journey start. Empty TemplateGroup = applies to every group of that
+// JourneyType (truly universal). A named meta-group has an appliesTo rule
+// that decides whether it runs given the user's chosen group.
+// ============================================================
+const META_GROUP_RULES = {
+  "Common - W-2": {
+    journeyType: "Onboarding",
+    label: "Common — W-2 onboarding (excludes Virtual Assistant)",
+    // Runs for every onboarding group EXCEPT Virtual Assistant (1099 contractor)
+    appliesTo: (selectedGroup) => selectedGroup !== "Virtual Assistant",
+  },
+};
+function isMetaGroup(name) { return Object.prototype.hasOwnProperty.call(META_GROUP_RULES, name); }
+function templateAppliesToGroup(tpl, selectedGroup) {
+  if (!tpl.TemplateGroup) return true;                       // universal
+  if (tpl.TemplateGroup === selectedGroup) return true;      // exact match
+  const meta = META_GROUP_RULES[tpl.TemplateGroup];
+  if (meta && meta.appliesTo(selectedGroup)) return true;    // meta-group hit
+  return false;
+}
+
+// ============================================================
 // HELPERS
 // ============================================================
 function todayIso() { return new Date().toISOString().slice(0, 10); }
@@ -254,26 +277,40 @@ function useMsal() {
 // DEFAULT TEMPLATE TASKS — seed when ELC_TemplateTasks is empty
 // ============================================================
 // Convention: TemplateGroup === "" means the task applies to EVERY group of that JourneyType
-// (i.e. a common/universal step). A named TemplateGroup limits the task to that group.
+// (truly universal). A named TemplateGroup limits the task to that group. A meta-group name
+// (see META_GROUP_RULES, e.g. "Common - W-2") applies via a rule — Common-W-2 runs for every
+// onboarding group EXCEPT Virtual Assistant.
 //
-// NewShire flows differ enough between groups (esp. VA — 1099 contractor, no I-9, no benefits)
-// that the seed sets are intentionally complete per-group with NO empty-group "common" tasks.
 // Source: NewShire_Onboarding_Offboarding_Checklists.xlsx (authored by Brandy Turner).
 const DEFAULT_TEMPLATES = [
+  // ═════════════════════════════════════════════════════════════════════
+  // ONBOARDING — Common - W-2  (auto-applies to all W-2 onboarding groups,
+  // i.e. Corporate / On-Site / Off-Site / Maintenance. Excluded for VA.)
+  // ═════════════════════════════════════════════════════════════════════
+  { JourneyType:"Onboarding", TemplateGroup:"Common - W-2", Phase:"Pre-Offer", Title:"Background check authorization signed", AssigneeRole:"HR", OffsetDays:-21, Required:true, Notes:"" },
+  { JourneyType:"Onboarding", TemplateGroup:"Common - W-2", Phase:"Pre-Offer", Title:"Reference checks completed", AssigneeRole:"HR", OffsetDays:-21, Required:true, Notes:"" },
+  { JourneyType:"Onboarding", TemplateGroup:"Common - W-2", Phase:"Pre-Offer", Title:"Compensation approved (Cara / John)", AssigneeRole:"Admin", OffsetDays:-21, Required:true, Notes:"" },
+  { JourneyType:"Onboarding", TemplateGroup:"Common - W-2", Phase:"T-7 Days", Title:"Offer letter generated and sent", AssigneeRole:"Admin", OffsetDays:-7, Required:true, Notes:"" },
+  { JourneyType:"Onboarding", TemplateGroup:"Common - W-2", Phase:"T-7 Days", Title:"Offer letter signed and returned", AssigneeRole:"Employee", OffsetDays:-7, Required:true, Notes:"" },
+  { JourneyType:"Onboarding", TemplateGroup:"Common - W-2", Phase:"T-7 Days", Title:"Send employment paperwork packet (I-9, W-4, SC W-4, direct deposit, emergency contact, beneficiary)", AssigneeRole:"HR", OffsetDays:-7, Required:true, Notes:"" },
+  { JourneyType:"Onboarding", TemplateGroup:"Common - W-2", Phase:"T-7 Days", Title:"Complete I-9 Section 1, W-4, SC W-4, direct deposit forms", AssigneeRole:"Employee", OffsetDays:-7, Required:true, Notes:"" },
+  { JourneyType:"Onboarding", TemplateGroup:"Common - W-2", Phase:"T-7 Days", Title:"Submit emergency contact and beneficiary forms", AssigneeRole:"Employee", OffsetDays:-7, Required:true, Notes:"" },
+  { JourneyType:"Onboarding", TemplateGroup:"Common - W-2", Phase:"T-7 Days", Title:"Confirm Day 1 logistics with new hire", AssigneeRole:"Manager", OffsetDays:-7, Required:true, Notes:"" },
+  { JourneyType:"Onboarding", TemplateGroup:"Common - W-2", Phase:"T-5 Days", Title:"Create M365 account and assign license", AssigneeRole:"Admin", OffsetDays:-5, Required:true, Notes:"" },
+  { JourneyType:"Onboarding", TemplateGroup:"Common - W-2", Phase:"Day 1",    Title:"Bring acceptable I-9 ID documents", AssigneeRole:"Employee", OffsetDays:0, Required:true, Notes:"Passport OR DL + SSN card/birth cert." },
+  { JourneyType:"Onboarding", TemplateGroup:"Common - W-2", Phase:"Day 1",    Title:"Complete I-9 Section 2 with ID verification", AssigneeRole:"HR", OffsetDays:0, Required:true, Notes:"Federal deadline: Day 3." },
+  { JourneyType:"Onboarding", TemplateGroup:"Common - W-2", Phase:"Day 1",    Title:"Set M365 password, enable MFA", AssigneeRole:"Employee", OffsetDays:0, Required:true, Notes:"" },
+  { JourneyType:"Onboarding", TemplateGroup:"Common - W-2", Phase:"Day 1",    Title:"Sign handbook, NDA, harassment policy, IT acceptable use", AssigneeRole:"Employee", OffsetDays:0, Required:true, Notes:"" },
+  { JourneyType:"Onboarding", TemplateGroup:"Common - W-2", Phase:"Day 1",    Title:"Take photo for directory and ID badge", AssigneeRole:"HR", OffsetDays:0, Required:true, Notes:"" },
+  { JourneyType:"Onboarding", TemplateGroup:"Common - W-2", Phase:"Day 30",   Title:"30-day check-in: what's working, what's unclear, where stuck", AssigneeRole:"Manager", OffsetDays:30, Required:true, Notes:"" },
+  { JourneyType:"Onboarding", TemplateGroup:"Common - W-2", Phase:"Day 60",   Title:"Role competency review", AssigneeRole:"Manager", OffsetDays:60, Required:true, Notes:"" },
+  { JourneyType:"Onboarding", TemplateGroup:"Common - W-2", Phase:"Day 90",   Title:"Probation review and benefits enrollment", AssigneeRole:"HR", OffsetDays:90, Required:true, Notes:"" },
+  { JourneyType:"Onboarding", TemplateGroup:"Common - W-2", Phase:"Day 90",   Title:"Complete benefits enrollment (election deadline is firm)", AssigneeRole:"Employee", OffsetDays:90, Required:true, Notes:"" },
+
   // ═════════════════════════════════════════════════════════════════════
   // ONBOARDING — Corporate Office Team Member
   // Office-based roles at 333 Wade Hampton Blvd. Operations, accounting, admin.
   // ═════════════════════════════════════════════════════════════════════
-  { JourneyType:"Onboarding", TemplateGroup:"Corporate Office Team Member", Phase:"Pre-Offer", Title:"Background check authorization signed", AssigneeRole:"HR", OffsetDays:-21, Required:true, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"Corporate Office Team Member", Phase:"Pre-Offer", Title:"Reference checks completed", AssigneeRole:"HR", OffsetDays:-21, Required:true, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"Corporate Office Team Member", Phase:"Pre-Offer", Title:"Compensation approved (Cara / John)", AssigneeRole:"Admin", OffsetDays:-21, Required:true, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"Corporate Office Team Member", Phase:"T-7 Days", Title:"Offer letter generated and sent", AssigneeRole:"Admin", OffsetDays:-7, Required:true, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"Corporate Office Team Member", Phase:"T-7 Days", Title:"Offer letter signed and returned", AssigneeRole:"Employee", OffsetDays:-7, Required:true, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"Corporate Office Team Member", Phase:"T-7 Days", Title:"Send employment paperwork: I-9, W-4, SC W-4, direct deposit, emergency contact, beneficiary", AssigneeRole:"HR", OffsetDays:-7, Required:true, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"Corporate Office Team Member", Phase:"T-7 Days", Title:"Complete I-9 Section 1, W-4, SC W-4, direct deposit forms", AssigneeRole:"Employee", OffsetDays:-7, Required:true, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"Corporate Office Team Member", Phase:"T-7 Days", Title:"Submit emergency contact and beneficiary forms", AssigneeRole:"Employee", OffsetDays:-7, Required:true, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"Corporate Office Team Member", Phase:"T-7 Days", Title:"Confirm Day 1 logistics with new hire (start time, location, greeter, parking)", AssigneeRole:"Manager", OffsetDays:-7, Required:true, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"Corporate Office Team Member", Phase:"T-5 Days", Title:"Create M365 account and assign license", AssigneeRole:"Admin", OffsetDays:-5, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"Corporate Office Team Member", Phase:"T-5 Days", Title:"Add to M365 security groups (Corporate Office)", AssigneeRole:"Admin", OffsetDays:-5, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"Corporate Office Team Member", Phase:"T-5 Days", Title:"Create AppFolio user with role-based permissions", AssigneeRole:"Admin", OffsetDays:-5, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"Corporate Office Team Member", Phase:"T-5 Days", Title:"Assign phone extension", AssigneeRole:"Admin", OffsetDays:-5, Required:true, Notes:"" },
@@ -285,15 +322,11 @@ const DEFAULT_TEMPLATES = [
   { JourneyType:"Onboarding", TemplateGroup:"Corporate Office Team Member", Phase:"T-1 Day", Title:"Notify office staff of new hire arrival", AssigneeRole:"Manager", OffsetDays:-1, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"Corporate Office Team Member", Phase:"T-1 Day", Title:"Confirm Day 1 logistics with new hire", AssigneeRole:"Manager", OffsetDays:-1, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"Corporate Office Team Member", Phase:"T-1 Day", Title:"Confirm start time, location, dress code, what to bring", AssigneeRole:"Employee", OffsetDays:-1, Required:true, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"Corporate Office Team Member", Phase:"Day 1", Title:"Bring acceptable I-9 ID documents (passport OR DL + SSN card / birth cert)", AssigneeRole:"Employee", OffsetDays:0, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"Corporate Office Team Member", Phase:"Day 1", Title:"Welcome meeting and building tour", AssigneeRole:"Manager", OffsetDays:0, Required:true, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"Corporate Office Team Member", Phase:"Day 1", Title:"Complete I-9 Section 2 with ID verification", AssigneeRole:"HR", OffsetDays:0, Required:true, Notes:"Federal deadline: Day 3." },
   { JourneyType:"Onboarding", TemplateGroup:"Corporate Office Team Member", Phase:"Day 1", Title:"Issue equipment, building keys, badge", AssigneeRole:"Manager", OffsetDays:0, Required:true, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"Corporate Office Team Member", Phase:"Day 1", Title:"Set M365 password, enable MFA, install Teams/Outlook", AssigneeRole:"Employee", OffsetDays:0, Required:true, Notes:"" },
+  { JourneyType:"Onboarding", TemplateGroup:"Corporate Office Team Member", Phase:"Day 1", Title:"Install Teams/Outlook on workstation", AssigneeRole:"Employee", OffsetDays:0, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"Corporate Office Team Member", Phase:"Day 1", Title:"Set up email signature using NewShire template", AssigneeRole:"Employee", OffsetDays:0, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"Corporate Office Team Member", Phase:"Day 1", Title:"Add profile photo to Teams and AppFolio", AssigneeRole:"Employee", OffsetDays:0, Required:true, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"Corporate Office Team Member", Phase:"Day 1", Title:"Sign handbook, NDA, harassment policy, IT acceptable use", AssigneeRole:"Employee", OffsetDays:0, Required:true, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"Corporate Office Team Member", Phase:"Day 1", Title:"Take photo for directory and ID badge", AssigneeRole:"HR", OffsetDays:0, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"Corporate Office Team Member", Phase:"Day 1", Title:"Complete NewShire University orientation module", AssigneeRole:"Employee", OffsetDays:0, Required:true, Notes:"When LMS live." },
   { JourneyType:"Onboarding", TemplateGroup:"Corporate Office Team Member", Phase:"Day 1", Title:"Team lunch / intro meetings", AssigneeRole:"Manager", OffsetDays:0, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"Corporate Office Team Member", Phase:"Week 1", Title:"Role-specific training: AppFolio modules and SOPs", AssigneeRole:"Manager", OffsetDays:3, Required:true, Notes:"" },
@@ -304,30 +337,19 @@ const DEFAULT_TEMPLATES = [
   { JourneyType:"Onboarding", TemplateGroup:"Corporate Office Team Member", Phase:"Weeks 2-4", Title:"Paired work with experienced team member", AssigneeRole:"Manager", OffsetDays:14, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"Corporate Office Team Member", Phase:"Weeks 2-4", Title:"Begin solo low-risk tasks", AssigneeRole:"Employee", OffsetDays:14, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"Corporate Office Team Member", Phase:"Weeks 2-4", Title:"Complete required NewShire University modules", AssigneeRole:"Employee", OffsetDays:14, Required:true, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"Corporate Office Team Member", Phase:"Day 30", Title:"30-day check-in: what's working, what's unclear, where stuck", AssigneeRole:"Manager", OffsetDays:30, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"Corporate Office Team Member", Phase:"Day 30", Title:"Self-assessment prepared for check-in", AssigneeRole:"Employee", OffsetDays:30, Required:true, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"Corporate Office Team Member", Phase:"Day 60", Title:"Role competency review", AssigneeRole:"Manager", OffsetDays:60, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"Corporate Office Team Member", Phase:"Day 60", Title:"Adjust training plan if gaps identified", AssigneeRole:"Manager", OffsetDays:60, Required:true, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"Corporate Office Team Member", Phase:"Day 90", Title:"Probation review and benefits enrollment", AssigneeRole:"HR", OffsetDays:90, Required:true, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"Corporate Office Team Member", Phase:"Day 90", Title:"Complete benefits enrollment (election deadline is firm)", AssigneeRole:"Employee", OffsetDays:90, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"Corporate Office Team Member", Phase:"Day 90", Title:"Confirm permanent status", AssigneeRole:"Manager", OffsetDays:90, Required:true, Notes:"" },
 
   // ═════════════════════════════════════════════════════════════════════
   // ONBOARDING — On Site Team Member
   // Property manager / on-site leasing at a single property.
   // ═════════════════════════════════════════════════════════════════════
-  { JourneyType:"Onboarding", TemplateGroup:"On Site Team Member", Phase:"Pre-Offer", Title:"Background check (ENHANCED: unit entry, resident interaction)", AssigneeRole:"HR", OffsetDays:-21, Required:true, Notes:"" },
+  { JourneyType:"Onboarding", TemplateGroup:"On Site Team Member", Phase:"Pre-Offer", Title:"Background check — ENHANCED (unit entry, resident interaction)", AssigneeRole:"HR", OffsetDays:-21, Required:true, Notes:"Supplements the Common-W-2 background check." },
   { JourneyType:"Onboarding", TemplateGroup:"On Site Team Member", Phase:"Pre-Offer", Title:"Drug screen completed (industry standard for on-site)", AssigneeRole:"HR", OffsetDays:-21, Required:true, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"On Site Team Member", Phase:"Pre-Offer", Title:"Reference checks completed", AssigneeRole:"HR", OffsetDays:-21, Required:true, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"On Site Team Member", Phase:"Pre-Offer", Title:"Compensation approved (Cara / John)", AssigneeRole:"Admin", OffsetDays:-21, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"On Site Team Member", Phase:"Pre-Offer", Title:"If employee unit: verify availability and lease/license terms", AssigneeRole:"Admin", OffsetDays:-21, Required:false, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"On Site Team Member", Phase:"T-7 Days", Title:"Offer letter generated and sent", AssigneeRole:"Admin", OffsetDays:-7, Required:true, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"On Site Team Member", Phase:"T-7 Days", Title:"Offer letter signed and returned", AssigneeRole:"Employee", OffsetDays:-7, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"On Site Team Member", Phase:"T-7 Days", Title:"If employee unit: lease/license agreement prepared", AssigneeRole:"Admin", OffsetDays:-7, Required:false, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"On Site Team Member", Phase:"T-7 Days", Title:"Send employment paperwork packet", AssigneeRole:"HR", OffsetDays:-7, Required:true, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"On Site Team Member", Phase:"T-7 Days", Title:"Complete I-9 Section 1, W-4, SC W-4, direct deposit forms", AssigneeRole:"Employee", OffsetDays:-7, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"On Site Team Member", Phase:"T-7 Days", Title:"Confirm Day 1 logistics, dress code, and parking", AssigneeRole:"Manager", OffsetDays:-7, Required:true, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"On Site Team Member", Phase:"T-5 Days", Title:"Create M365 account and assign license", AssigneeRole:"Admin", OffsetDays:-5, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"On Site Team Member", Phase:"T-5 Days", Title:"Create AppFolio user — SCOPED to specific property only", AssigneeRole:"Admin", OffsetDays:-5, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"On Site Team Member", Phase:"T-5 Days", Title:"Add to on-call rotation calendar", AssigneeRole:"Admin", OffsetDays:-5, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"On Site Team Member", Phase:"T-3 Days", Title:"Add to SharePoint sites and property-specific Teams channel", AssigneeRole:"Admin", OffsetDays:-3, Required:true, Notes:"" },
@@ -339,14 +361,11 @@ const DEFAULT_TEMPLATES = [
   { JourneyType:"Onboarding", TemplateGroup:"On Site Team Member", Phase:"T-1 Day", Title:"Pull current resident roster and notable accounts", AssigneeRole:"Manager", OffsetDays:-1, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"On Site Team Member", Phase:"T-1 Day", Title:"If employee unit: complete pre-move-in inspection", AssigneeRole:"Manager", OffsetDays:-1, Required:false, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"On Site Team Member", Phase:"T-1 Day", Title:"Confirm Day 1 logistics", AssigneeRole:"Manager", OffsetDays:-1, Required:true, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"On Site Team Member", Phase:"Day 1", Title:"Bring acceptable I-9 ID documents", AssigneeRole:"Employee", OffsetDays:0, Required:true, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"On Site Team Member", Phase:"Day 1", Title:"Complete I-9 Section 2", AssigneeRole:"HR", OffsetDays:0, Required:true, Notes:"Federal deadline: Day 3." },
   { JourneyType:"Onboarding", TemplateGroup:"On Site Team Member", Phase:"Day 1", Title:"Sign master key control log", AssigneeRole:"Employee", OffsetDays:0, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"On Site Team Member", Phase:"Day 1", Title:"Sign on-site office key receipt", AssigneeRole:"Employee", OffsetDays:0, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"On Site Team Member", Phase:"Day 1", Title:"Equipment handoff: laptop/tablet, mobile, AppFolio mobile app installed", AssigneeRole:"Manager", OffsetDays:0, Required:true, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"On Site Team Member", Phase:"Day 1", Title:"Set M365 password, enable MFA, set up mobile apps", AssigneeRole:"Employee", OffsetDays:0, Required:true, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"On Site Team Member", Phase:"Day 1", Title:"Sign handbook, NDA, harassment, IT acceptable use, on-call policy", AssigneeRole:"Employee", OffsetDays:0, Required:true, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"On Site Team Member", Phase:"Day 1", Title:"Take photo for directory and ID badge", AssigneeRole:"HR", OffsetDays:0, Required:true, Notes:"" },
+  { JourneyType:"Onboarding", TemplateGroup:"On Site Team Member", Phase:"Day 1", Title:"Set up mobile apps (AppFolio mobile, Teams)", AssigneeRole:"Employee", OffsetDays:0, Required:true, Notes:"" },
+  { JourneyType:"Onboarding", TemplateGroup:"On Site Team Member", Phase:"Day 1", Title:"Sign on-call policy (in addition to common handbook/NDA/etc.)", AssigneeRole:"Employee", OffsetDays:0, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"On Site Team Member", Phase:"Day 1", Title:"CONDUCT FULL PROPERTY TOUR: every unit, common areas, mechanical, problem areas", AssigneeRole:"Manager", OffsetDays:0, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"On Site Team Member", Phase:"Day 1", Title:"Review property-specific SOPs and emergency protocols", AssigneeRole:"Manager", OffsetDays:0, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"On Site Team Member", Phase:"Day 1", Title:"Review on-call rotation and after-hours expectations", AssigneeRole:"Manager", OffsetDays:0, Required:true, Notes:"" },
@@ -361,11 +380,8 @@ const DEFAULT_TEMPLATES = [
   { JourneyType:"Onboarding", TemplateGroup:"On Site Team Member", Phase:"Weeks 2-4", Title:"Shadow + paired leasing tours / move-ins / move-outs", AssigneeRole:"Manager", OffsetDays:14, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"On Site Team Member", Phase:"Weeks 2-4", Title:"Begin solo low-complexity resident interactions", AssigneeRole:"Employee", OffsetDays:14, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"On Site Team Member", Phase:"Weeks 2-4", Title:"Complete required NewShire University modules including fair housing", AssigneeRole:"Employee", OffsetDays:14, Required:true, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"On Site Team Member", Phase:"Day 30", Title:"30-day check-in", AssigneeRole:"Manager", OffsetDays:30, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"On Site Team Member", Phase:"Day 30", Title:"Verify all property systems familiarity", AssigneeRole:"Manager", OffsetDays:30, Required:true, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"On Site Team Member", Phase:"Day 60", Title:"Role competency review including leasing performance", AssigneeRole:"Manager", OffsetDays:60, Required:true, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"On Site Team Member", Phase:"Day 90", Title:"Probation review and benefits enrollment", AssigneeRole:"HR", OffsetDays:90, Required:true, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"On Site Team Member", Phase:"Day 90", Title:"Complete benefits enrollment", AssigneeRole:"Employee", OffsetDays:90, Required:true, Notes:"" },
+  { JourneyType:"Onboarding", TemplateGroup:"On Site Team Member", Phase:"Day 60", Title:"Leasing performance review (supplements common competency review)", AssigneeRole:"Manager", OffsetDays:60, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"On Site Team Member", Phase:"Compliance", Title:"Confirm SC Property Manager licensing", AssigneeRole:"Admin", OffsetDays:0, Required:true, Notes:"Required for property management functions in SC." },
   { JourneyType:"Onboarding", TemplateGroup:"On Site Team Member", Phase:"Compliance", Title:"Fair housing training completed before any leasing decisions", AssigneeRole:"Manager", OffsetDays:0, Required:true, Notes:"" },
 
@@ -373,19 +389,11 @@ const DEFAULT_TEMPLATES = [
   // ONBOARDING — Off Site Team Member
   // Regional/floating/multi-property. Vehicle + multi-property key control.
   // ═════════════════════════════════════════════════════════════════════
-  { JourneyType:"Onboarding", TemplateGroup:"Off Site Team Member", Phase:"Pre-Offer", Title:"Background check (ENHANCED: multi-property unit entry, resident interaction)", AssigneeRole:"HR", OffsetDays:-21, Required:true, Notes:"" },
+  { JourneyType:"Onboarding", TemplateGroup:"Off Site Team Member", Phase:"Pre-Offer", Title:"Background check — ENHANCED (multi-property unit entry, resident interaction)", AssigneeRole:"HR", OffsetDays:-21, Required:true, Notes:"Supplements the Common-W-2 background check." },
   { JourneyType:"Onboarding", TemplateGroup:"Off Site Team Member", Phase:"Pre-Offer", Title:"MVR check completed (driving multiple properties)", AssigneeRole:"HR", OffsetDays:-21, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"Off Site Team Member", Phase:"Pre-Offer", Title:"Drug screen completed", AssigneeRole:"HR", OffsetDays:-21, Required:true, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"Off Site Team Member", Phase:"Pre-Offer", Title:"Reference checks completed", AssigneeRole:"HR", OffsetDays:-21, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"Off Site Team Member", Phase:"Pre-Offer", Title:"If personal vehicle: verify personal auto insurance with business use rider", AssigneeRole:"HR", OffsetDays:-21, Required:true, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"Off Site Team Member", Phase:"Pre-Offer", Title:"Compensation approved (Cara / John)", AssigneeRole:"Admin", OffsetDays:-21, Required:true, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"Off Site Team Member", Phase:"T-7 Days", Title:"Offer letter generated and sent", AssigneeRole:"Admin", OffsetDays:-7, Required:true, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"Off Site Team Member", Phase:"T-7 Days", Title:"Offer letter signed and returned", AssigneeRole:"Employee", OffsetDays:-7, Required:true, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"Off Site Team Member", Phase:"T-7 Days", Title:"Send employment paperwork packet", AssigneeRole:"HR", OffsetDays:-7, Required:true, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"Off Site Team Member", Phase:"T-7 Days", Title:"Complete I-9 Section 1, W-4, SC W-4, direct deposit forms", AssigneeRole:"Employee", OffsetDays:-7, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"Off Site Team Member", Phase:"T-7 Days", Title:"Decide: company vehicle vs personal vehicle + mileage reimbursement", AssigneeRole:"Manager", OffsetDays:-7, Required:true, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"Off Site Team Member", Phase:"T-7 Days", Title:"Confirm Day 1 logistics", AssigneeRole:"Manager", OffsetDays:-7, Required:true, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"Off Site Team Member", Phase:"T-5 Days", Title:"Create M365 account and assign license", AssigneeRole:"Admin", OffsetDays:-5, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"Off Site Team Member", Phase:"T-5 Days", Title:"Create AppFolio user — scoped to assigned portfolio", AssigneeRole:"Admin", OffsetDays:-5, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"Off Site Team Member", Phase:"T-5 Days", Title:"Mobile phone setup (work expected on the go)", AssigneeRole:"Admin", OffsetDays:-5, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"Off Site Team Member", Phase:"T-5 Days", Title:"If company vehicle: schedule assignment, registration, insurance, fuel card", AssigneeRole:"Manager", OffsetDays:-5, Required:false, Notes:"" },
@@ -396,15 +404,12 @@ const DEFAULT_TEMPLATES = [
   { JourneyType:"Onboarding", TemplateGroup:"Off Site Team Member", Phase:"T-3 Days", Title:"If mileage reimbursement: mileage tracking app selected", AssigneeRole:"Manager", OffsetDays:-3, Required:false, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"Off Site Team Member", Phase:"T-1 Day", Title:"Build Week 1 property tour schedule", AssigneeRole:"Manager", OffsetDays:-1, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"Off Site Team Member", Phase:"T-1 Day", Title:"Confirm Day 1 logistics", AssigneeRole:"Manager", OffsetDays:-1, Required:true, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"Off Site Team Member", Phase:"Day 1", Title:"Bring acceptable I-9 ID documents and driver's license", AssigneeRole:"Employee", OffsetDays:0, Required:true, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"Off Site Team Member", Phase:"Day 1", Title:"Complete I-9 Section 2", AssigneeRole:"HR", OffsetDays:0, Required:true, Notes:"Federal deadline: Day 3." },
+  { JourneyType:"Onboarding", TemplateGroup:"Off Site Team Member", Phase:"Day 1", Title:"Bring driver's license (for vehicle assignment)", AssigneeRole:"Employee", OffsetDays:0, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"Off Site Team Member", Phase:"Day 1", Title:"Sign master key control log (all assigned properties)", AssigneeRole:"Employee", OffsetDays:0, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"Off Site Team Member", Phase:"Day 1", Title:"Equipment handoff: laptop, mobile, AppFolio mobile app", AssigneeRole:"Manager", OffsetDays:0, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"Off Site Team Member", Phase:"Day 1", Title:"Vehicle handoff (if company vehicle): inspection, registration, insurance, fuel card", AssigneeRole:"Manager", OffsetDays:0, Required:false, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"Off Site Team Member", Phase:"Day 1", Title:"Set M365 password, enable MFA, install mobile apps", AssigneeRole:"Employee", OffsetDays:0, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"Off Site Team Member", Phase:"Day 1", Title:"Install mileage tracking app if applicable", AssigneeRole:"Employee", OffsetDays:0, Required:false, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"Off Site Team Member", Phase:"Day 1", Title:"Sign handbook, NDA, harassment, IT acceptable use, vehicle use, on-call", AssigneeRole:"Employee", OffsetDays:0, Required:true, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"Off Site Team Member", Phase:"Day 1", Title:"Take photo for directory and ID badge", AssigneeRole:"HR", OffsetDays:0, Required:true, Notes:"" },
+  { JourneyType:"Onboarding", TemplateGroup:"Off Site Team Member", Phase:"Day 1", Title:"Sign vehicle use policy + on-call (in addition to common handbook/NDA/etc.)", AssigneeRole:"Employee", OffsetDays:0, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"Off Site Team Member", Phase:"Day 1", Title:"Review assigned portfolio and coverage expectations", AssigneeRole:"Manager", OffsetDays:0, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"Off Site Team Member", Phase:"Week 1", Title:"FULL TOUR EACH ASSIGNED PROPERTY: units, common areas, mechanical, problem areas", AssigneeRole:"Manager", OffsetDays:3, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"Off Site Team Member", Phase:"Week 1", Title:"Meet on-site staff at each property", AssigneeRole:"Employee", OffsetDays:3, Required:true, Notes:"" },
@@ -414,10 +419,6 @@ const DEFAULT_TEMPLATES = [
   { JourneyType:"Onboarding", TemplateGroup:"Off Site Team Member", Phase:"Weeks 2-4", Title:"Paired work covering multiple properties", AssigneeRole:"Manager", OffsetDays:14, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"Off Site Team Member", Phase:"Weeks 2-4", Title:"Begin solo low-risk tasks across portfolio", AssigneeRole:"Employee", OffsetDays:14, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"Off Site Team Member", Phase:"Weeks 2-4", Title:"Complete required NewShire University modules including fair housing", AssigneeRole:"Employee", OffsetDays:14, Required:true, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"Off Site Team Member", Phase:"Day 30", Title:"30-day check-in", AssigneeRole:"Manager", OffsetDays:30, Required:true, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"Off Site Team Member", Phase:"Day 60", Title:"Role competency review", AssigneeRole:"Manager", OffsetDays:60, Required:true, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"Off Site Team Member", Phase:"Day 90", Title:"Probation review and benefits enrollment", AssigneeRole:"HR", OffsetDays:90, Required:true, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"Off Site Team Member", Phase:"Day 90", Title:"Complete benefits enrollment", AssigneeRole:"Employee", OffsetDays:90, Required:true, Notes:"" },
 
   // ═════════════════════════════════════════════════════════════════════
   // ONBOARDING — Virtual Assistant  (1099 contractor — distinct from W-2)
@@ -471,19 +472,13 @@ const DEFAULT_TEMPLATES = [
   // ONBOARDING — Maintenance (WG Maintenance LLC)
   // Field tech. Vehicle, tools, uniforms, master keys, trade certs.
   // ═════════════════════════════════════════════════════════════════════
-  { JourneyType:"Onboarding", TemplateGroup:"Maintenance", Phase:"Pre-Offer", Title:"Background check", AssigneeRole:"HR", OffsetDays:-21, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"Maintenance", Phase:"Pre-Offer", Title:"MVR check completed", AssigneeRole:"HR", OffsetDays:-21, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"Maintenance", Phase:"Pre-Offer", Title:"Drug screen completed", AssigneeRole:"HR", OffsetDays:-21, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"Maintenance", Phase:"Pre-Offer", Title:"Verify trade certifications: EPA 608 (HVAC refrigerant), state licenses", AssigneeRole:"HR", OffsetDays:-21, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"Maintenance", Phase:"Pre-Offer", Title:"Verify lead-safe RRP certification (required for pre-1978 properties)", AssigneeRole:"HR", OffsetDays:-21, Required:true, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"Maintenance", Phase:"Pre-Offer", Title:"Reference checks (prior maintenance / contractor work)", AssigneeRole:"HR", OffsetDays:-21, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"Maintenance", Phase:"Pre-Offer", Title:"Personal auto insurance verification if using personal vehicle", AssigneeRole:"HR", OffsetDays:-21, Required:false, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"Maintenance", Phase:"T-7 Days", Title:"Offer letter generated and sent", AssigneeRole:"Admin", OffsetDays:-7, Required:true, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"Maintenance", Phase:"T-7 Days", Title:"Offer letter signed and returned", AssigneeRole:"Employee", OffsetDays:-7, Required:true, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"Maintenance", Phase:"T-7 Days", Title:"Send employment paperwork packet", AssigneeRole:"HR", OffsetDays:-7, Required:true, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"Maintenance", Phase:"T-7 Days", Title:"Complete I-9 Section 1, W-4, SC W-4, direct deposit forms", AssigneeRole:"Employee", OffsetDays:-7, Required:true, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"Maintenance", Phase:"T-7 Days", Title:"Confirm Day 1 logistics (start time, location — shop or office)", AssigneeRole:"Manager", OffsetDays:-7, Required:true, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"Maintenance", Phase:"T-5 Days", Title:"Create M365 account (typically Business Basic — email/Teams focus)", AssigneeRole:"Admin", OffsetDays:-5, Required:true, Notes:"" },
+  { JourneyType:"Onboarding", TemplateGroup:"Maintenance", Phase:"T-7 Days", Title:"Confirm Day 1 location (shop or office)", AssigneeRole:"Manager", OffsetDays:-7, Required:true, Notes:"" },
+  { JourneyType:"Onboarding", TemplateGroup:"Maintenance", Phase:"T-5 Days", Title:"Note: M365 license is typically Business Basic (email/Teams focus)", AssigneeRole:"Admin", OffsetDays:-5, Required:false, Notes:"Common-W-2 already creates the account; this is a license-tier note for Maintenance." },
   { JourneyType:"Onboarding", TemplateGroup:"Maintenance", Phase:"T-5 Days", Title:"Create AppFolio user — Mobile / Work Order focused permissions", AssigneeRole:"Admin", OffsetDays:-5, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"Maintenance", Phase:"T-5 Days", Title:"Add to Maintenance Teams channel", AssigneeRole:"Admin", OffsetDays:-5, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"Maintenance", Phase:"T-5 Days", Title:"Coordinate vehicle assignment OR personal vehicle approval", AssigneeRole:"Manager", OffsetDays:-5, Required:true, Notes:"" },
@@ -495,15 +490,13 @@ const DEFAULT_TEMPLATES = [
   { JourneyType:"Onboarding", TemplateGroup:"Maintenance", Phase:"T-3 Days", Title:"Vehicle finalized: assignment, registration, insurance card, fuel card", AssigneeRole:"Manager", OffsetDays:-3, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"Maintenance", Phase:"T-1 Day", Title:"Property list and access compiled", AssigneeRole:"Manager", OffsetDays:-1, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"Maintenance", Phase:"T-1 Day", Title:"Confirm Day 1 logistics", AssigneeRole:"Manager", OffsetDays:-1, Required:true, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"Maintenance", Phase:"Day 1", Title:"Bring acceptable I-9 ID documents and driver's license", AssigneeRole:"Employee", OffsetDays:0, Required:true, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"Maintenance", Phase:"Day 1", Title:"Bring trade certifications (EPA 608, lead RRP, state licenses)", AssigneeRole:"Employee", OffsetDays:0, Required:true, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"Maintenance", Phase:"Day 1", Title:"Complete I-9 Section 2", AssigneeRole:"HR", OffsetDays:0, Required:true, Notes:"Federal deadline: Day 3." },
+  { JourneyType:"Onboarding", TemplateGroup:"Maintenance", Phase:"Day 1", Title:"Bring driver's license + trade certifications (EPA 608, lead RRP, state licenses)", AssigneeRole:"Employee", OffsetDays:0, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"Maintenance", Phase:"Day 1", Title:"Sign tool inventory receipt", AssigneeRole:"Employee", OffsetDays:0, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"Maintenance", Phase:"Day 1", Title:"Sign master key control log", AssigneeRole:"Employee", OffsetDays:0, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"Maintenance", Phase:"Day 1", Title:"Receive uniforms, fuel card, photo ID badge, mobile phone if company-provided", AssigneeRole:"Manager", OffsetDays:0, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"Maintenance", Phase:"Day 1", Title:"Vehicle handoff: inspection, registration, insurance card, fuel card", AssigneeRole:"Manager", OffsetDays:0, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"Maintenance", Phase:"Day 1", Title:"Install AppFolio mobile app and verify login", AssigneeRole:"Employee", OffsetDays:0, Required:true, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"Maintenance", Phase:"Day 1", Title:"Sign handbook, NDA, harassment, vehicle use, drug policy, safety, tool use/return", AssigneeRole:"Employee", OffsetDays:0, Required:true, Notes:"" },
+  { JourneyType:"Onboarding", TemplateGroup:"Maintenance", Phase:"Day 1", Title:"Sign vehicle use, drug policy, safety, tool use/return (in addition to common handbook/NDA/etc.)", AssigneeRole:"Employee", OffsetDays:0, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"Maintenance", Phase:"Day 1", Title:"Safety training: ladder, PPE, OSHA basics, lockout/tagout, electrical safety", AssigneeRole:"Manager", OffsetDays:0, Required:true, Notes:"Conducted by Lead Tech." },
   { JourneyType:"Onboarding", TemplateGroup:"Maintenance", Phase:"Day 1", Title:"Review property list and access", AssigneeRole:"Manager", OffsetDays:0, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"Maintenance", Phase:"Day 1", Title:"AppFolio work order walkthrough", AssigneeRole:"Manager", OffsetDays:0, Required:true, Notes:"Conducted by Lead Tech." },
@@ -516,11 +509,8 @@ const DEFAULT_TEMPLATES = [
   { JourneyType:"Onboarding", TemplateGroup:"Maintenance", Phase:"Weeks 2-4", Title:"Begin solo work orders (low complexity)", AssigneeRole:"Employee", OffsetDays:14, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"Maintenance", Phase:"Weeks 2-4", Title:"Quality check on completed WOs by Lead Tech", AssigneeRole:"Manager", OffsetDays:14, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"Maintenance", Phase:"Weeks 2-4", Title:"Complete required NewShire University modules including fair housing", AssigneeRole:"Employee", OffsetDays:14, Required:true, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"Maintenance", Phase:"Day 30", Title:"30-day check-in: WO quality, time per WO, comeback rate", AssigneeRole:"Manager", OffsetDays:30, Required:true, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"Maintenance", Phase:"Day 60", Title:"Role competency review", AssigneeRole:"Manager", OffsetDays:60, Required:true, Notes:"" },
+  { JourneyType:"Onboarding", TemplateGroup:"Maintenance", Phase:"Day 30", Title:"Maintenance-specific: WO quality, time per WO, comeback rate review", AssigneeRole:"Manager", OffsetDays:30, Required:true, Notes:"Supplements the common 30-day check-in." },
   { JourneyType:"Onboarding", TemplateGroup:"Maintenance", Phase:"Day 60", Title:"Vehicle and tool inventory check", AssigneeRole:"Manager", OffsetDays:60, Required:true, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"Maintenance", Phase:"Day 90", Title:"Probation review and benefits enrollment", AssigneeRole:"HR", OffsetDays:90, Required:true, Notes:"" },
-  { JourneyType:"Onboarding", TemplateGroup:"Maintenance", Phase:"Day 90", Title:"Complete benefits enrollment", AssigneeRole:"Employee", OffsetDays:90, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"Maintenance", Phase:"Annual", Title:"Trade certification renewal tracking (EPA 608, lead RRP)", AssigneeRole:"Admin", OffsetDays:365, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"Maintenance", Phase:"Annual", Title:"Annual MVR re-pull for drivers", AssigneeRole:"HR", OffsetDays:365, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"Maintenance", Phase:"Annual", Title:"Tool inventory annual audit", AssigneeRole:"Manager", OffsetDays:365, Required:true, Notes:"" },
@@ -1043,11 +1033,11 @@ function StartJourneyModal({ type, onClose }) {
   const [saving, setSaving] = useState(false);
   const [warn, setWarn] = useState("");
 
-  // Generation rule: include templates that are either common (no TemplateGroup)
-  // OR match the chosen group. Sorted chronologically.
+  // Generation rule: include templates that are universal (empty group), exact-group
+  // match, or a meta-group whose rule applies (e.g. Common - W-2). Sorted chronologically.
   const usableTemplates = state.templates
     .filter(t => t.JourneyType === type && t.Active !== false)
-    .filter(t => !t.TemplateGroup || t.TemplateGroup === f.TemplateGroup)
+    .filter(t => templateAppliesToGroup(t, f.TemplateGroup))
     .sort((a, b) => (a.OffsetDays || 0) - (b.OffsetDays || 0) || (a.Title || "").localeCompare(b.Title || ""));
   const availableGroups = getAvailableGroups(state, type);
 
@@ -1181,10 +1171,20 @@ function StartJourneyModal({ type, onClose }) {
               {availableGroups.map(g => (<option key={g} value={g}>{g}</option>))}
             </select>
             <div style={{ fontSize: 11, color: C.b4, marginTop: 4 }}>
-              Determines which template group runs.{" "}
-              <strong>{usableTemplates.length}</strong> task{usableTemplates.length === 1 ? "" : "s"} will be generated
-              ({state.templates.filter(t => t.JourneyType === type && t.Active !== false && !t.TemplateGroup).length} common
-              + {state.templates.filter(t => t.JourneyType === type && t.Active !== false && t.TemplateGroup === f.TemplateGroup).length} group-specific).
+              Determines which template group runs. <strong>{usableTemplates.length}</strong> task{usableTemplates.length === 1 ? "" : "s"} will generate
+              {(() => {
+                const all = state.templates.filter(t => t.JourneyType === type && t.Active !== false);
+                const universal = all.filter(t => !t.TemplateGroup).length;
+                const groupSpecific = all.filter(t => t.TemplateGroup === f.TemplateGroup).length;
+                const metas = all.filter(t => isMetaGroup(t.TemplateGroup) && templateAppliesToGroup(t, f.TemplateGroup));
+                const metaBreakdown = {};
+                metas.forEach(t => { metaBreakdown[t.TemplateGroup] = (metaBreakdown[t.TemplateGroup] || 0) + 1; });
+                const parts = [];
+                if (universal) parts.push(`${universal} universal`);
+                Object.entries(metaBreakdown).forEach(([k, v]) => parts.push(`${v} ${k}`));
+                if (groupSpecific) parts.push(`${groupSpecific} group-specific`);
+                return parts.length ? " (" + parts.join(" + ") + ")" : "";
+              })()}.
             </div>
           </div>
           <div>
@@ -1279,11 +1279,21 @@ function StartJourneyModal({ type, onClose }) {
 // ============================================================
 // TEMPLATES TAB
 // ============================================================
-// All groups that exist for a given JourneyType: predefined + any custom ones found in templates
+// All non-meta groups that exist for a given JourneyType — these are the ones
+// users actually select at journey start. Meta-groups (Common - W-2 etc.) are
+// shown only in Templates editor UI, not in the journey-start picker.
 function getAvailableGroups(state, journeyType) {
   const predefined = CONFIG.templateGroups[journeyType] || [];
-  const custom = uniq(state.templates.filter(t => t.JourneyType === journeyType && t.TemplateGroup).map(t => t.TemplateGroup));
+  const custom = uniq(state.templates
+    .filter(t => t.JourneyType === journeyType && t.TemplateGroup && !isMetaGroup(t.TemplateGroup))
+    .map(t => t.TemplateGroup));
   return uniq([...predefined, ...custom]);
+}
+// Meta-groups defined for a given JourneyType — used to populate the Templates editor filter
+function getMetaGroupsForType(journeyType) {
+  return Object.entries(META_GROUP_RULES)
+    .filter(([, rule]) => rule.journeyType === journeyType)
+    .map(([name, rule]) => ({ name, label: rule.label }));
 }
 
 function TemplatesTab() {
@@ -1295,6 +1305,7 @@ function TemplatesTab() {
   const canEdit = role === "Admin" || role === "HR";
 
   const groups = getAvailableGroups(state, filter);
+  const metaGroups = getMetaGroupsForType(filter);
   const visible = state.templates
     .filter(t => t.JourneyType === filter)
     .filter(t => {
@@ -1338,7 +1349,12 @@ function TemplatesTab() {
             </select>
             <select style={{ ...S.select, width: "auto" }} value={groupFilter} onChange={e => setGroupFilter(e.target.value)}>
               <option value="__all__">All groups ({groupCounts.__all__})</option>
-              <option value="__common__">Common (applies to every group) ({groupCounts.__common__ || 0})</option>
+              <option value="__common__">Universal — applies to every group ({groupCounts.__common__ || 0})</option>
+              {metaGroups.length > 0 && (
+                <optgroup label="Meta-groups (rule-based)">
+                  {metaGroups.map(m => <option key={m.name} value={m.name}>{m.label} ({groupCounts[m.name] || 0})</option>)}
+                </optgroup>
+              )}
               <optgroup label="Group-specific">
                 {groups.map(g => <option key={g} value={g}>{g} ({groupCounts[g] || 0})</option>)}
               </optgroup>
@@ -1363,7 +1379,9 @@ function TemplatesTab() {
               <tbody>
                 {visible.map(t => (
                   <tr key={t.id}>
-                    <td style={S.td}>{t.TemplateGroup ? <Badge type="pu">{t.TemplateGroup}</Badge> : <Badge type="neutral">Common</Badge>}</td>
+                    <td style={S.td}>{t.TemplateGroup
+                      ? <Badge type={isMetaGroup(t.TemplateGroup) ? "inf" : "pu"}>{t.TemplateGroup}</Badge>
+                      : <Badge type="neutral">Universal</Badge>}</td>
                     <td style={S.td}><Badge type="neutral">{t.Phase || "—"}</Badge></td>
                     <td style={S.td}><div style={{ fontWeight: 600, color: C.t7 }}>{t.Title}</div>{t.Notes && <div style={{ fontSize: 11, color: C.b4 }}>{t.Notes}</div>}</td>
                     <td style={S.td}>{t.AssigneeRole}</td>

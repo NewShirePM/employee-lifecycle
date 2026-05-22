@@ -2691,16 +2691,8 @@ function App() {
 
   const ctxValue = { state, actions, role, currentEmail, me };
 
-  if (!ready) return <div style={{ ...S.page, display: "flex", alignItems: "center", justifyContent: "center" }}><div style={{ animation: "pulse 1.4s ease-in-out infinite", color: C.b4 }}>Loading…</div></div>;
-  if (!acct) return <LoginScreen onLogin={login} err={authErr} />;
-
-  const obCount = state.journeys.filter(j => j.JourneyType === "Onboarding" && j.Status !== "Complete" && j.Status !== "Cancelled").length;
-  const offCount = state.journeys.filter(j => j.JourneyType === "Offboarding" && j.Status !== "Complete" && j.Status !== "Cancelled").length;
-  const myCount = state.journeyTasks.filter(t => (t.AssigneeEmail || "").toLowerCase() === currentEmail && t.Status !== "Done").length;
-
-  const isAdmin = role === "Admin" || role === "HR";
-  const isManagerOrUp = isAdmin || role === "Manager";
-  // Reviews tab count = overdue + due-soon + never, for the user's scope
+  // Reviews tab count — must be called every render to satisfy rules-of-hooks,
+  // so it lives ABOVE the early returns below.
   const reviewCount = useMemo(() => {
     const scope = role === "Admin" || role === "HR" ? state.employees.filter(e => e.EmployeeActive !== false)
       : role === "Manager" ? state.employees.filter(e => e.EmployeeActive !== false && (e.ManagerEmail || "").toLowerCase() === currentEmail)
@@ -2710,6 +2702,16 @@ function App() {
       return n + ((s.state === "overdue" || s.state === "due-soon" || s.state === "never") ? 1 : 0);
     }, 0);
   }, [state.employees, state.reviews, role, currentEmail]);
+
+  if (!ready) return <div style={{ ...S.page, display: "flex", alignItems: "center", justifyContent: "center" }}><div style={{ animation: "pulse 1.4s ease-in-out infinite", color: C.b4 }}>Loading…</div></div>;
+  if (!acct) return <LoginScreen onLogin={login} err={authErr} />;
+
+  const obCount = state.journeys.filter(j => j.JourneyType === "Onboarding" && j.Status !== "Complete" && j.Status !== "Cancelled").length;
+  const offCount = state.journeys.filter(j => j.JourneyType === "Offboarding" && j.Status !== "Complete" && j.Status !== "Cancelled").length;
+  const myCount = state.journeyTasks.filter(t => (t.AssigneeEmail || "").toLowerCase() === currentEmail && t.Status !== "Done").length;
+
+  const isAdmin = role === "Admin" || role === "HR";
+  const isManagerOrUp = isAdmin || role === "Manager";
   const tabs = [
     { key: "onboarding", label: "Onboarding", count: obCount },
     { key: "offboarding", label: "Offboarding", count: offCount },

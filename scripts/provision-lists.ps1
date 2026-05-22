@@ -300,6 +300,38 @@ $ELC_EmployeeFiles = Ensure-List -Name 'ELC_EmployeeFiles' -Template 'documentLi
     (ColDate   'DocDate')
 )
 
+Write-Step "Provisioning ELC_QuarterlyReviews"
+$ELC_QuarterlyReviews = Ensure-List -Name 'ELC_QuarterlyReviews' -Description 'Quarterly performance reviews per employee' -Columns @(
+    (ColText      'EmployeeEmail')
+    (ColText      'ReviewPeriod')
+    (ColDate      'DueDate')
+    (ColDate      'ConductedDate')
+    (ColText      'ReviewerEmail')
+    (ColChoice    'Rating' @('Outstanding','Exceeds Expectations','Meets Expectations','Needs Improvement','Below Expectations') 'Meets Expectations')
+    (ColChoice    'Status' @('Scheduled','In Progress','Conducted','Acknowledged','Cancelled') 'Scheduled')
+    (ColMultiText 'Strengths')
+    (ColMultiText 'GrowthAreas')
+    (ColMultiText 'GoalsNextQuarter')
+    (ColMultiText 'EmployeeComments')
+    (ColMultiText 'AttachmentLinks')
+    (ColDate      'AcknowledgedDate')
+    (ColYesNo     'Confidential' $true)
+)
+
+Write-Step "Provisioning ELC_PayChanges"
+$ELC_PayChanges = Ensure-List -Name 'ELC_PayChanges' -Description 'Compensation history per employee — every pay change is one row' -Columns @(
+    (ColText      'EmployeeEmail')
+    (ColDate      'EffectiveDate')
+    (ColNumber    'PreviousPay')
+    (ColNumber    'NewPay')
+    (ColChoice    'PayType' @('Hourly','Salary','Salary + Commission','Commission Only','1099 Contract','Other') 'Hourly')
+    (ColChoice    'ChangeType' @('Initial Hire','Merit Increase','Promotion','Cost of Living','Market Adjustment','Schedule Change','Demotion','Other') 'Merit Increase')
+    (ColText      'ApprovedBy')
+    (ColMultiText 'Reason')
+    (ColText      'RelatedReviewId')
+    (ColYesNo     'Confidential' $true)
+)
+
 # ─────────────────────────────────────────────────────────────
 # SEED — Apps registry
 # ─────────────────────────────────────────────────────────────
@@ -366,6 +398,7 @@ Write-Step "Done."
 Write-Host "  Lists provisioned (or already present):" -ForegroundColor Gray
 @(
     'ELC_Journeys', 'ELC_TemplateTasks', 'ELC_JourneyTasks', 'ELC_Config',
-    'ELC_Apps', 'ELC_EmployeeNotes', 'ELC_PermissionAudit', 'ELC_EmployeeFiles'
+    'ELC_Apps', 'ELC_EmployeeNotes', 'ELC_PermissionAudit', 'ELC_EmployeeFiles',
+    'ELC_QuarterlyReviews', 'ELC_PayChanges'
 ) | ForEach-Object { Write-Host "    - $_" -ForegroundColor Gray }
 Write-Host ""

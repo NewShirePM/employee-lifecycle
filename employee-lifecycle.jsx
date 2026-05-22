@@ -11,7 +11,7 @@ const CONFIG = {
   tenantId: "33575d04-ca7b-4396-8011-9eaea4030b46",
   siteId: "vanrockre.sharepoint.com,a02c1cd8-9f1f-4827-8286-7b6b7ce74232,01202419-6625-4499-b0d5-8ceb1cffdba3",
   appName: "EMPLOYEE LIFECYCLE",
-  version: "0.2.0",
+  version: "0.3.0",
   lists: {
     employees:           "Employees",            // shared
     journeys:            "ELC_Journeys",
@@ -22,7 +22,11 @@ const CONFIG = {
     notes:               "ELC_EmployeeNotes",     // coaching / discipline / PIP / 1:1 / praise
     audit:               "ELC_PermissionAudit",   // log of every per-app role change
     files:               "ELC_EmployeeFiles",     // SharePoint document library
+    reviews:             "ELC_QuarterlyReviews",  // quarterly performance reviews
+    payChanges:          "ELC_PayChanges",        // compensation history
   },
+  reviewIntervalDays: 90,       // expected cadence between reviews
+  reviewOverdueDays: 100,       // flag as overdue once gap exceeds this
   adminEmails: ["bturner@newshirepm.com"],
   filesLibraryUrl: "https://vanrockre.sharepoint.com/ELC_EmployeeFiles",
   // Predefined groups shown in dropdowns. Users can also create custom groups by typing.
@@ -640,7 +644,7 @@ function normalizeApp(raw) {
 }
 
 async function loadAll(token) {
-  const [emp, jrn, tpl, jt, cfg, apps, notes, audit] = await Promise.all([
+  const [emp, jrn, tpl, jt, cfg, apps, notes, audit, reviews, pay] = await Promise.all([
     safeGet(token, "Employees",      `${lUrl(CONFIG.lists.employees)}?expand=fields&$top=500`),
     safeGet(token, "Journeys",       `${lUrl(CONFIG.lists.journeys)}?expand=fields&$top=500`),
     safeGet(token, "TemplateTasks",  `${lUrl(CONFIG.lists.templateTasks)}?expand=fields&$top=500`),
@@ -649,6 +653,8 @@ async function loadAll(token) {
     safeGet(token, "Apps",           `${lUrl(CONFIG.lists.apps)}?expand=fields&$top=100`),
     safeGet(token, "Notes",          `${lUrl(CONFIG.lists.notes)}?expand=fields&$top=2000`),
     safeGet(token, "Audit",          `${lUrl(CONFIG.lists.audit)}?expand=fields&$top=2000`),
+    safeGet(token, "Reviews",        `${lUrl(CONFIG.lists.reviews)}?expand=fields&$top=2000`),
+    safeGet(token, "PayChanges",     `${lUrl(CONFIG.lists.payChanges)}?expand=fields&$top=2000`),
   ]);
   const employees = emp.map(e => ({ id: e.id, ...e.fields }));
   const journeys = jrn.map(j => ({ id: j.id, ...j.fields }));
@@ -658,8 +664,10 @@ async function loadAll(token) {
   if (appsList.length === 0) appsList = DEFAULT_APPS.map((a, i) => ({ ...a, id: `default-${i}` }));
   const notesList = notes.map(n => ({ id: n.id, ...n.fields }));
   const auditList = audit.map(a => ({ id: a.id, ...a.fields }));
+  const reviewsList = reviews.map(r => ({ id: r.id, ...r.fields }));
+  const payChangesList = pay.map(p => ({ id: p.id, ...p.fields }));
   const config = cfg.length > 0 ? (() => { try { return JSON.parse(cfg[0].fields.ConfigJSON || "{}"); } catch { return {}; } })() : {};
-  return { employees, journeys, templates, journeyTasks, config, apps: appsList, notes: notesList, audit: auditList };
+  return { employees, journeys, templates, journeyTasks, config, apps: appsList, notes: notesList, audit: auditList, reviews: reviewsList, payChanges: payChangesList };
 }
 
 // ============================================================
@@ -1622,6 +1630,222 @@ function NoteEditModal({ noteId, forEmail, onClose }) {
 }
 
 // ============================================================
+// REVIEWS — helpers
+// ============================================================
+const REVIEW_RATINGS = ["Outstanding", "Exceeds Expectations", "Meets Expectations", "Needs Improvement", "Below Expectations"];
+const REVIEW_RATING_TYPE = { "Outstanding": "ok", "Exceeds Expectations": "ok", "Meets Expectations": "inf", "Needs Improvement": "wn", "Below Expectations": "er" };
+const REVIEW_STATUSES = ["Scheduled", "In Progress", "Conducted", "Acknowledged", "Cancelled"];
+function currentQuarterLabel(date = new Date()) {
+  const q = Math.floor(date.getMonth() / 3) + 1;
+  return `${date.getFullYear()}-Q${q}`;
+}
+function lastConductedReview(employeeEmail, reviews) {
+  return reviews
+    .filter(r => (r.EmployeeEmail || "").toLowerCase() === (employeeEmail || "").toLowerCase() && r.ConductedDate && r.Status !== "Cancelled")
+    .sort((a, b) => (b.ConductedDate || "").localeCompare(a.ConductedDate || ""))[0] || null;
+}
+// Returns { state: "ok"|"due-soon"|"overdue"|"never", daysSinceLast, daysUntilDue, lastReview, nextDueDate }
+function reviewStatusFor(employeeEmail, reviews) {
+  const last = lastConductedReview(employeeEmail, reviews);
+  if (!last) return { state: "never", lastReview: null, daysSinceLast: null, nextDueDate: null, daysUntilDue: null };
+  const dSince = Math.floor((Date.now() - new Date(last.ConductedDate).getTime()) / 86400000);
+  const nextDue = addDays(last.ConductedDate, CONFIG.reviewIntervalDays);
+  const daysUntilDue = daysFromNow(nextDue);
+  let st = "ok";
+  if (dSince > CONFIG.reviewOverdueDays) st = "overdue";
+  else if (daysUntilDue !== null && daysUntilDue <= 14) st = "due-soon";
+  return { state: st, lastReview: last, daysSinceLast: dSince, nextDueDate: nextDue, daysUntilDue };
+}
+function fmtMoney(n) { if (n == null || isNaN(n)) return "—"; return "$" + Number(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+
+// ============================================================
+// REVIEW EDIT MODAL
+// ============================================================
+function ReviewEditModal({ reviewId, forEmail, onClose }) {
+  const { state, actions, currentEmail } = useData();
+  const existing = reviewId ? state.reviews.find(r => String(r.id) === String(reviewId)) : null;
+  const [f, setF] = useState(() => existing ? { ...existing } : {
+    EmployeeEmail: forEmail || "",
+    ReviewPeriod: currentQuarterLabel(),
+    DueDate: todayIso(),
+    ConductedDate: "",
+    ReviewerEmail: currentEmail,
+    Rating: "Meets Expectations",
+    Status: "Scheduled",
+    Strengths: "",
+    GrowthAreas: "",
+    GoalsNextQuarter: "",
+    EmployeeComments: "",
+    AttachmentLinks: "",
+    Confidential: true,
+    AcknowledgedDate: "",
+    Title: "",
+  });
+  const [saving, setSaving] = useState(false);
+  const isEdit = !!existing;
+
+  const save = async () => {
+    if (!f.EmployeeEmail) return alert("Employee email is required.");
+    if (!f.ReviewPeriod) return alert("Review period is required.");
+    setSaving(true);
+    try {
+      const payload = { ...f, Title: f.Title || `${f.ReviewPeriod} — ${f.EmployeeEmail}` };
+      if (isEdit) await actions.updateReview(reviewId, payload);
+      else await actions.createReview(payload);
+      onClose();
+    } catch (e) { alert("Save failed: " + e.message); } finally { setSaving(false); }
+  };
+  const del = async () => {
+    if (!confirm("Delete this review? Cannot be undone.")) return;
+    setSaving(true);
+    try { await actions.deleteReview(reviewId); onClose(); } catch (e) { alert("Delete failed: " + e.message); } finally { setSaving(false); }
+  };
+
+  return (
+    <Modal title={isEdit ? "Edit Quarterly Review" : "New Quarterly Review"} width={780} onClose={onClose} footer={
+      <>
+        {isEdit && <button style={S.btnO(C.er, C.er)} onClick={del} disabled={saving}>Delete</button>}
+        <button style={S.btnO()} onClick={onClose} disabled={saving}>Cancel</button>
+        <button style={S.btn(C.hdr)} onClick={save} disabled={saving}>{saving ? "Saving…" : "Save"}</button>
+      </>
+    }>
+      <div style={{ display: "grid", gap: 12 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+          <div><label style={S.label}>Review Period *</label><input style={S.input} value={f.ReviewPeriod} placeholder="2026-Q2" onChange={e => setF({ ...f, ReviewPeriod: e.target.value })} /></div>
+          <div><label style={S.label}>Status</label><select style={S.select} value={f.Status} onChange={e => setF({ ...f, Status: e.target.value })}>{REVIEW_STATUSES.map(s => <option key={s}>{s}</option>)}</select></div>
+          <div><label style={S.label}>Rating</label><select style={S.select} value={f.Rating} onChange={e => setF({ ...f, Rating: e.target.value })}>{REVIEW_RATINGS.map(s => <option key={s}>{s}</option>)}</select></div>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+          <div><label style={S.label}>Due Date</label><input style={S.input} type="date" value={f.DueDate || ""} onChange={e => setF({ ...f, DueDate: e.target.value })} /></div>
+          <div><label style={S.label}>Conducted Date</label><input style={S.input} type="date" value={f.ConductedDate || ""} onChange={e => setF({ ...f, ConductedDate: e.target.value })} /></div>
+          <div><label style={S.label}>Reviewer Email</label><input style={S.input} value={f.ReviewerEmail || ""} onChange={e => setF({ ...f, ReviewerEmail: e.target.value.toLowerCase() })} /></div>
+        </div>
+        <div><label style={S.label}>Strengths</label><textarea style={S.textarea} value={f.Strengths || ""} onChange={e => setF({ ...f, Strengths: e.target.value })} placeholder="What this employee is doing well…" /></div>
+        <div><label style={S.label}>Growth Areas</label><textarea style={S.textarea} value={f.GrowthAreas || ""} onChange={e => setF({ ...f, GrowthAreas: e.target.value })} placeholder="Where to focus development…" /></div>
+        <div><label style={S.label}>Goals for Next Quarter</label><textarea style={S.textarea} value={f.GoalsNextQuarter || ""} onChange={e => setF({ ...f, GoalsNextQuarter: e.target.value })} placeholder="Concrete, measurable objectives…" /></div>
+        <div><label style={S.label}>Employee Comments</label><textarea style={S.textarea} value={f.EmployeeComments || ""} onChange={e => setF({ ...f, EmployeeComments: e.target.value })} placeholder="Employee's response / acknowledgement notes…" /></div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <div><label style={S.label}>Acknowledged Date</label><input style={S.input} type="date" value={f.AcknowledgedDate || ""} onChange={e => setF({ ...f, AcknowledgedDate: e.target.value })} /></div>
+          <div style={{ alignSelf: "end", display: "flex", alignItems: "center", gap: 6, fontSize: 13, paddingBottom: 8 }}>
+            <input type="checkbox" checked={!!f.Confidential} onChange={e => setF({ ...f, Confidential: e.target.checked })} /> Confidential
+          </div>
+        </div>
+        <div><label style={S.label}>Attachment Links (one per line)</label><textarea style={S.textarea} value={f.AttachmentLinks || ""} onChange={e => setF({ ...f, AttachmentLinks: e.target.value })} placeholder="https://vanrockre.sharepoint.com/.../signed-review.pdf" /></div>
+      </div>
+    </Modal>
+  );
+}
+
+// ============================================================
+// PAY CHANGE EDIT MODAL
+// ============================================================
+const PAY_TYPES = ["Hourly", "Salary", "Salary + Commission", "Commission Only", "1099 Contract", "Other"];
+const PAY_CHANGE_TYPES = ["Initial Hire", "Merit Increase", "Promotion", "Cost of Living", "Market Adjustment", "Schedule Change", "Demotion", "Other"];
+function PayChangeEditModal({ payId, forEmail, onClose }) {
+  const { state, actions, currentEmail } = useData();
+  const existing = payId ? state.payChanges.find(p => String(p.id) === String(payId)) : null;
+  // Pre-fill PreviousPay with the most recent NewPay for this employee
+  const priorPay = useMemo(() => {
+    const email = (existing?.EmployeeEmail || forEmail || "").toLowerCase();
+    if (!email) return null;
+    const history = state.payChanges
+      .filter(p => (p.EmployeeEmail || "").toLowerCase() === email && (!existing || String(p.id) !== String(existing.id)))
+      .sort((a, b) => (b.EffectiveDate || "").localeCompare(a.EffectiveDate || ""));
+    return history[0] ? history[0].NewPay : null;
+  }, [state.payChanges, forEmail, existing]);
+
+  const [f, setF] = useState(() => existing ? { ...existing } : {
+    EmployeeEmail: forEmail || "",
+    EffectiveDate: todayIso(),
+    PreviousPay: priorPay ?? "",
+    NewPay: "",
+    PayType: "Hourly",
+    ChangeType: "Merit Increase",
+    ApprovedBy: currentEmail,
+    Reason: "",
+    RelatedReviewId: "",
+    Confidential: true,
+    Title: "",
+  });
+  const [saving, setSaving] = useState(false);
+  const isEdit = !!existing;
+
+  const prev = parseFloat(f.PreviousPay);
+  const next = parseFloat(f.NewPay);
+  const pct = !isNaN(prev) && !isNaN(next) && prev > 0 ? ((next - prev) / prev) * 100 : null;
+  const delta = !isNaN(prev) && !isNaN(next) ? next - prev : null;
+
+  const save = async () => {
+    if (!f.EmployeeEmail) return alert("Employee email is required.");
+    if (!f.EffectiveDate) return alert("Effective date is required.");
+    if (f.NewPay === "" || isNaN(parseFloat(f.NewPay))) return alert("New pay is required.");
+    setSaving(true);
+    try {
+      const payload = {
+        ...f,
+        PreviousPay: f.PreviousPay === "" ? 0 : parseFloat(f.PreviousPay),
+        NewPay: parseFloat(f.NewPay),
+        Title: f.Title || `${f.ChangeType} — ${f.EmployeeEmail} (${fmtDate(f.EffectiveDate)})`,
+      };
+      if (isEdit) await actions.updatePayChange(payId, payload);
+      else await actions.createPayChange(payload);
+      onClose();
+    } catch (e) { alert("Save failed: " + e.message); } finally { setSaving(false); }
+  };
+  const del = async () => {
+    if (!confirm("Delete this pay change record? Cannot be undone.")) return;
+    setSaving(true);
+    try { await actions.deletePayChange(payId); onClose(); } catch (e) { alert("Delete failed: " + e.message); } finally { setSaving(false); }
+  };
+
+  // Reviews for this employee, for the optional review link
+  const empReviews = state.reviews
+    .filter(r => (r.EmployeeEmail || "").toLowerCase() === (f.EmployeeEmail || "").toLowerCase())
+    .sort((a, b) => (b.ConductedDate || b.DueDate || "").localeCompare(a.ConductedDate || a.DueDate || ""));
+
+  return (
+    <Modal title={isEdit ? "Edit Pay Change" : "New Pay Change"} width={720} onClose={onClose} footer={
+      <>
+        {isEdit && <button style={S.btnO(C.er, C.er)} onClick={del} disabled={saving}>Delete</button>}
+        <button style={S.btnO()} onClick={onClose} disabled={saving}>Cancel</button>
+        <button style={S.btn(C.hdr)} onClick={save} disabled={saving}>{saving ? "Saving…" : "Save"}</button>
+      </>
+    }>
+      <div style={{ display: "grid", gap: 12 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+          <div><label style={S.label}>Effective Date *</label><input style={S.input} type="date" value={f.EffectiveDate || ""} onChange={e => setF({ ...f, EffectiveDate: e.target.value })} /></div>
+          <div><label style={S.label}>Pay Type</label><select style={S.select} value={f.PayType} onChange={e => setF({ ...f, PayType: e.target.value })}>{PAY_TYPES.map(t => <option key={t}>{t}</option>)}</select></div>
+          <div><label style={S.label}>Change Type</label><select style={S.select} value={f.ChangeType} onChange={e => setF({ ...f, ChangeType: e.target.value })}>{PAY_CHANGE_TYPES.map(t => <option key={t}>{t}</option>)}</select></div>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+          <div><label style={S.label}>Previous Pay</label><input style={S.input} type="number" step="0.01" value={f.PreviousPay} onChange={e => setF({ ...f, PreviousPay: e.target.value })} /></div>
+          <div><label style={S.label}>New Pay *</label><input style={S.input} type="number" step="0.01" value={f.NewPay} onChange={e => setF({ ...f, NewPay: e.target.value })} /></div>
+          <div style={{ alignSelf: "end", padding: "8px 10px", border: `1px solid ${C.b1}`, borderRadius: 4, background: C.t0, fontSize: 12 }}>
+            {pct !== null ? (
+              <div>
+                <div style={{ fontWeight: 700, color: pct > 0 ? C.ok : pct < 0 ? C.er : C.b4, fontFamily: mono }}>{pct > 0 ? "+" : ""}{pct.toFixed(1)}%</div>
+                <div style={{ color: C.b4, fontSize: 11 }}>{delta > 0 ? "+" : ""}{fmtMoney(Math.abs(delta))}{delta < 0 ? " ↓" : delta > 0 ? " ↑" : ""}</div>
+              </div>
+            ) : <span style={{ color: C.b4 }}>—</span>}
+          </div>
+        </div>
+        <div><label style={S.label}>Approved By</label><input style={S.input} value={f.ApprovedBy || ""} onChange={e => setF({ ...f, ApprovedBy: e.target.value.toLowerCase() })} /></div>
+        <div><label style={S.label}>Reason / Justification</label><textarea style={S.textarea} value={f.Reason || ""} onChange={e => setF({ ...f, Reason: e.target.value })} placeholder="Performance, role change, market correction…" /></div>
+        {empReviews.length > 0 && (
+          <div><label style={S.label}>Linked Quarterly Review (optional)</label>
+            <select style={S.select} value={f.RelatedReviewId || ""} onChange={e => setF({ ...f, RelatedReviewId: e.target.value })}>
+              <option value="">— None —</option>
+              {empReviews.map(r => <option key={r.id} value={r.id}>{r.ReviewPeriod} · {r.Rating} · {fmtDate(r.ConductedDate || r.DueDate)}</option>)}
+            </select>
+          </div>
+        )}
+        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}><input type="checkbox" checked={!!f.Confidential} onChange={e => setF({ ...f, Confidential: e.target.checked })} /> Confidential</label>
+      </div>
+    </Modal>
+  );
+}
+
+// ============================================================
 // EMPLOYEE DETAIL MODAL — Profile, Permissions, Notes, Coaching, Files, Journeys
 // ============================================================
 function EmployeeDetailModal({ email, onClose }) {
@@ -1637,6 +1861,9 @@ function EmployeeDetailModal({ email, onClose }) {
   const journeys = useMemo(() => emp ? state.journeys.filter(j => (j.EmployeeEmail || "").toLowerCase() === email).sort((a, b) => (b.Modified || "").localeCompare(a.Modified || "")) : [], [emp, state.journeys, email]);
   const notes    = useMemo(() => emp ? state.notes.filter(n => (n.EmployeeEmail || "").toLowerCase() === email).sort((a, b) => (b.NoteDate || "").localeCompare(a.NoteDate || "")) : [], [emp, state.notes, email]);
   const audit    = useMemo(() => emp ? state.audit.filter(a => (a.EmployeeEmail || "").toLowerCase() === email).sort((a, b) => (b.ChangedAt || "").localeCompare(a.ChangedAt || "")) : [], [emp, state.audit, email]);
+  const reviews  = useMemo(() => emp ? state.reviews.filter(r => (r.EmployeeEmail || "").toLowerCase() === email).sort((a, b) => (b.ConductedDate || b.DueDate || "").localeCompare(a.ConductedDate || a.DueDate || "")) : [], [emp, state.reviews, email]);
+  const pay      = useMemo(() => emp ? state.payChanges.filter(p => (p.EmployeeEmail || "").toLowerCase() === email).sort((a, b) => (b.EffectiveDate || "").localeCompare(a.EffectiveDate || "")) : [], [emp, state.payChanges, email]);
+  const reviewStatus = useMemo(() => reviewStatusFor(email, state.reviews), [state.reviews, email]);
 
   // Coaching aggregation — must run unconditionally to satisfy rules-of-hooks
   const coaching = useMemo(() => {
@@ -1700,6 +1927,8 @@ function EmployeeDetailModal({ email, onClose }) {
       <div style={{ marginLeft: -18, marginRight: -18, borderBottom: `1px solid ${C.b1}`, padding: "0 18px", display: "flex", overflowX: "auto" }}>
         <SubTab k="profile"      label="Profile" />
         <SubTab k="permissions"  label="App Permissions" count={state.apps.filter(a => (emp[a.ColumnName] || "None") !== "None" && emp[a.ColumnName]).length} />
+        <SubTab k="reviews"      label="Reviews" count={reviews.length} />
+        <SubTab k="compensation" label="Compensation" count={pay.length} />
         <SubTab k="notes"        label="Notes & Discipline" count={notes.length} />
         <SubTab k="coaching"     label="Coaching" />
         <SubTab k="journeys"     label="Journeys" count={journeys.length} />
@@ -1743,6 +1972,99 @@ function EmployeeDetailModal({ email, onClose }) {
                   <div key={a.id} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderBottom: `1px solid ${C.b1}`, fontSize: 12 }}>
                     <span><strong>{a.AppKey}</strong>: <span style={{ color: C.b4 }}>{a.OldRole}</span> → <strong style={{ color: C.t7 }}>{a.NewRole}</strong></span>
                     <span style={{ color: C.b4 }}>{a.ChangedBy} · {fmtDate(a.ChangedAt)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+        {sub === "reviews" && (
+          <div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+                {reviewStatus.state === "overdue" && <Badge type="er">⚠ Overdue: {reviewStatus.daysSinceLast} days since last review</Badge>}
+                {reviewStatus.state === "due-soon" && <Badge type="wn">Due in {reviewStatus.daysUntilDue} days</Badge>}
+                {reviewStatus.state === "ok" && reviewStatus.lastReview && <Badge type="ok">Last: {fmtDate(reviewStatus.lastReview.ConductedDate)} · next due {fmtDate(reviewStatus.nextDueDate)}</Badge>}
+                {reviewStatus.state === "never" && <Badge type="neutral">No reviews on file yet</Badge>}
+              </div>
+              {canEdit && <button style={S.btn(C.hdr)} onClick={() => actions.openReviewNew(email)}>+ New Review</button>}
+            </div>
+            {reviews.length === 0 ? <Empty title="No reviews on file" sub={canEdit ? "Click '+ New Review' to record the first one." : "Nothing on file."} /> : reviews.map(r => (
+              <div key={r.id} style={{ background: C.wh, border: `1px solid ${C.b1}`, borderRadius: 6, padding: 12, marginBottom: 10 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                    <span style={{ fontWeight: 700, color: C.t7, fontSize: 14 }}>{r.ReviewPeriod || "—"}</span>
+                    <Badge type={REVIEW_RATING_TYPE[r.Rating] || "neutral"}>{r.Rating || "Unrated"}</Badge>
+                    <Badge type={r.Status === "Acknowledged" || r.Status === "Conducted" ? "ok" : r.Status === "Cancelled" ? "neutral" : "inf"}>{r.Status}</Badge>
+                    {r.Confidential && <Badge type="neutral">🔒 Confidential</Badge>}
+                  </div>
+                  {canEdit && <button style={{ ...S.btnO(C.t5), ...S.xs }} onClick={() => actions.openReviewEdit(r.id)}>Edit</button>}
+                </div>
+                <div style={{ fontSize: 11, color: C.b4, marginBottom: 8 }}>
+                  Conducted {fmtDate(r.ConductedDate)} by {r.ReviewerEmail || "—"} · Due {fmtDate(r.DueDate)}{r.AcknowledgedDate ? ` · Acknowledged ${fmtDate(r.AcknowledgedDate)}` : ""}
+                </div>
+                {r.Strengths && <div style={{ marginBottom: 6 }}><span style={{ fontSize: 11, fontWeight: 700, color: C.ok, textTransform: "uppercase" }}>Strengths</span><div style={{ fontSize: 13, whiteSpace: "pre-wrap" }}>{r.Strengths}</div></div>}
+                {r.GrowthAreas && <div style={{ marginBottom: 6 }}><span style={{ fontSize: 11, fontWeight: 700, color: C.wn, textTransform: "uppercase" }}>Growth Areas</span><div style={{ fontSize: 13, whiteSpace: "pre-wrap" }}>{r.GrowthAreas}</div></div>}
+                {r.GoalsNextQuarter && <div style={{ marginBottom: 6 }}><span style={{ fontSize: 11, fontWeight: 700, color: C.inf, textTransform: "uppercase" }}>Goals Next Quarter</span><div style={{ fontSize: 13, whiteSpace: "pre-wrap" }}>{r.GoalsNextQuarter}</div></div>}
+                {r.EmployeeComments && <div style={{ marginBottom: 6 }}><span style={{ fontSize: 11, fontWeight: 700, color: C.pu, textTransform: "uppercase" }}>Employee Comments</span><div style={{ fontSize: 13, whiteSpace: "pre-wrap" }}>{r.EmployeeComments}</div></div>}
+                {r.AttachmentLinks && (
+                  <div style={{ marginTop: 6, fontSize: 11 }}>
+                    {r.AttachmentLinks.split(/\r?\n/).filter(Boolean).map((u, i) => <div key={i}><a href={u} target="_blank" rel="noreferrer" style={{ color: C.inf }}>{u}</a></div>)}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+        {sub === "compensation" && (
+          <div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
+              {(() => {
+                const current = pay[0];
+                const initial = pay[pay.length - 1];
+                const totalChange = current && initial && current !== initial && initial.PreviousPay
+                  ? ((current.NewPay - (initial.PreviousPay || initial.NewPay)) / (initial.PreviousPay || initial.NewPay)) * 100
+                  : null;
+                return (
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    {current && <Badge type="inf">Current: {fmtMoney(current.NewPay)} · {current.PayType}</Badge>}
+                    {current && <Badge type="neutral">Effective {fmtDate(current.EffectiveDate)}</Badge>}
+                    {totalChange !== null && <Badge type={totalChange >= 0 ? "ok" : "er"}>Cumulative {totalChange >= 0 ? "+" : ""}{totalChange.toFixed(1)}%</Badge>}
+                  </div>
+                );
+              })()}
+              {canEdit && <button style={S.btn(C.hdr)} onClick={() => actions.openPayNew(email)}>+ Record Pay Change</button>}
+            </div>
+            {pay.length === 0 ? <Empty title="No compensation history yet" sub={canEdit ? "Click '+ Record Pay Change' to log the initial pay." : "Nothing on file."} /> : (
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                  <thead><tr><th style={S.th}>Effective</th><th style={S.th}>Change Type</th><th style={S.th}>From</th><th style={S.th}>To</th><th style={S.th}>%</th><th style={S.th}>Type</th><th style={S.th}>Approved By</th><th style={S.th}></th></tr></thead>
+                  <tbody>
+                    {pay.map(p => {
+                      const pct = p.PreviousPay > 0 ? ((p.NewPay - p.PreviousPay) / p.PreviousPay) * 100 : null;
+                      return (
+                        <tr key={p.id}>
+                          <td style={S.td}><div style={{ fontWeight: 600 }}>{fmtDate(p.EffectiveDate)}</div></td>
+                          <td style={S.td}><Badge type={p.ChangeType === "Demotion" ? "er" : p.ChangeType === "Promotion" ? "ok" : "neutral"}>{p.ChangeType}</Badge></td>
+                          <td style={S.td}>{p.PreviousPay ? fmtMoney(p.PreviousPay) : <span style={{ color: C.b4 }}>—</span>}</td>
+                          <td style={S.td}><strong>{fmtMoney(p.NewPay)}</strong></td>
+                          <td style={S.td}>{pct !== null ? <span style={{ fontFamily: mono, color: pct > 0 ? C.ok : pct < 0 ? C.er : C.b4 }}>{pct > 0 ? "+" : ""}{pct.toFixed(1)}%</span> : <span style={{ color: C.b4 }}>—</span>}</td>
+                          <td style={S.td}>{p.PayType}</td>
+                          <td style={S.td}>{p.ApprovedBy || "—"}</td>
+                          <td style={S.td}>{canEdit && <button style={{ ...S.btnO(C.t5), ...S.xs }} onClick={() => actions.openPayEdit(p.id)}>Edit</button>}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            {pay.some(p => p.Reason) && (
+              <div style={{ marginTop: 14, fontSize: 12 }}>
+                <div style={S.sec}>Reasons / Justifications</div>
+                {pay.filter(p => p.Reason).map(p => (
+                  <div key={p.id} style={{ padding: "6px 0", borderBottom: `1px solid ${C.b1}` }}>
+                    <strong>{fmtDate(p.EffectiveDate)}</strong> · {p.ChangeType} — <span style={{ color: C.b6 }}>{p.Reason}</span>
                   </div>
                 ))}
               </div>
@@ -1919,6 +2241,79 @@ function EmployeesTab() {
 }
 
 // ============================================================
+// REVIEWS TAB — quarterly review dashboard (overdue / due-soon / upcoming)
+// ============================================================
+function ReviewsTab() {
+  const { state, actions, role, currentEmail } = useData();
+  const isManagerOrUp = role === "Admin" || role === "HR" || role === "Manager";
+  // Scope: Admin/HR see everyone, Managers see their direct reports, others see themselves
+  const visibleEmployees = useMemo(() => {
+    if (role === "Admin" || role === "HR") return state.employees.filter(e => e.EmployeeActive !== false);
+    if (role === "Manager") return state.employees.filter(e => e.EmployeeActive !== false && (e.ManagerEmail || "").toLowerCase() === currentEmail);
+    return state.employees.filter(e => (e.Email || "").toLowerCase() === currentEmail);
+  }, [state.employees, role, currentEmail]);
+
+  const rows = useMemo(() => visibleEmployees.map(e => {
+    const status = reviewStatusFor(e.Email, state.reviews);
+    return { emp: e, ...status };
+  }), [visibleEmployees, state.reviews]);
+
+  const overdue  = rows.filter(r => r.state === "overdue");
+  const dueSoon  = rows.filter(r => r.state === "due-soon");
+  const okSoon   = rows.filter(r => r.state === "ok");
+  const never    = rows.filter(r => r.state === "never");
+
+  const Card = ({ r, badgeType, badge }) => (
+    <div onClick={() => actions.openEmployee(r.emp.Email)} style={{ cursor: "pointer", background: C.wh, border: `1px solid ${C.b1}`, borderRadius: 6, padding: 12, boxShadow: "0 1px 2px rgba(28,55,64,.04)" }}
+         onMouseEnter={ev => { ev.currentTarget.style.borderColor = C.g5; ev.currentTarget.style.boxShadow = "0 2px 8px rgba(205,160,75,.18)"; }}
+         onMouseLeave={ev => { ev.currentTarget.style.borderColor = C.b1; ev.currentTarget.style.boxShadow = "0 1px 2px rgba(28,55,64,.04)"; }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+        <Avatar name={r.emp.Title} size={36} />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontWeight: 700, color: C.t7, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.emp.Title}</div>
+          <div style={{ fontSize: 11, color: C.b4 }}>{r.emp.JobTitle || ""}</div>
+        </div>
+        <Badge type={badgeType}>{badge}</Badge>
+      </div>
+      <div style={{ fontSize: 11, color: C.b4 }}>
+        {r.lastReview
+          ? <>Last: <strong>{fmtDate(r.lastReview.ConductedDate)}</strong> · <Badge type={REVIEW_RATING_TYPE[r.lastReview.Rating] || "neutral"} dot={false}>{r.lastReview.Rating}</Badge></>
+          : <>No reviews on file</>}
+      </div>
+      {r.nextDueDate && <div style={{ fontSize: 11, color: C.b4, marginTop: 4 }}>Next due: <strong>{fmtDate(r.nextDueDate)}</strong></div>}
+    </div>
+  );
+
+  const Section = ({ title, items, type, badge }) => items.length === 0 ? null : (
+    <div style={S.card}>
+      <div style={S.cardT}><span>{title}</span><Badge type={type}>{items.length}</Badge></div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(290px, 1fr))", gap: 10 }}>
+        {items.map(r => <Card key={r.emp.id} r={r} badgeType={type} badge={badge(r)} />)}
+      </div>
+    </div>
+  );
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
+        <div style={S.kpi}><div style={S.kpiL}>Overdue</div><div style={{ ...S.kpiV, color: overdue.length > 0 ? C.er : C.t7 }}>{overdue.length}</div></div>
+        <div style={S.kpi}><div style={S.kpiL}>Due ≤ 14 days</div><div style={{ ...S.kpiV, color: dueSoon.length > 0 ? C.wn : C.t7 }}>{dueSoon.length}</div></div>
+        <div style={S.kpi}><div style={S.kpiL}>On Track</div><div style={S.kpiV}>{okSoon.length}</div></div>
+        <div style={S.kpi}><div style={S.kpiL}>Never Reviewed</div><div style={{ ...S.kpiV, color: never.length > 0 ? C.wn : C.t7 }}>{never.length}</div></div>
+      </div>
+      <div style={{ fontSize: 12, color: C.b4, marginBottom: 10 }}>
+        {role === "Admin" || role === "HR" ? "Showing all active employees." : role === "Manager" ? "Showing your direct reports." : "Showing your own review status."}
+        {" "}Cadence: review every {CONFIG.reviewIntervalDays} days; flagged overdue at {CONFIG.reviewOverdueDays} days.
+      </div>
+      <Section title="Overdue" items={overdue} type="er" badge={r => `${r.daysSinceLast}d since last`} />
+      <Section title="Due Soon" items={dueSoon} type="wn" badge={r => `${r.daysUntilDue}d to due`} />
+      <Section title="Never Reviewed" items={never} type="wn" badge={() => "—"} />
+      <Section title="On Track" items={okSoon} type="ok" badge={r => `next ${fmtDate(r.nextDueDate)}`} />
+    </div>
+  );
+}
+
+// ============================================================
 // REPORTS TAB
 // ============================================================
 function ReportsTab() {
@@ -1931,12 +2326,19 @@ function ReportsTab() {
   const byRole = {};
   overdue.forEach(t => { const r = t.AssigneeRole || "Unassigned"; byRole[r] = (byRole[r] || 0) + 1; });
   const last30 = state.journeys.filter(j => j.Status === "Complete" && j.Modified && (Date.now() - new Date(j.Modified).getTime()) / 86400000 <= 30);
+  const activeEmps = state.employees.filter(e => e.EmployeeActive !== false);
+  const overdueReviews = activeEmps.filter(e => reviewStatusFor(e.Email, state.reviews).state === "overdue");
+  const neverReviewed  = activeEmps.filter(e => reviewStatusFor(e.Email, state.reviews).state === "never");
+  const raisesLast90 = state.payChanges.filter(p => p.EffectiveDate && (Date.now() - new Date(p.EffectiveDate).getTime()) / 86400000 <= 90 && (p.NewPay > (p.PreviousPay || 0)));
   return (
     <div>
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
         <div style={S.kpi}><div style={S.kpiL}>Active Onboarding</div><div style={S.kpiV}>{ob.length}</div></div>
         <div style={S.kpi}><div style={S.kpiL}>Active Offboarding</div><div style={S.kpiV}>{of.length}</div></div>
         <div style={S.kpi}><div style={S.kpiL}>Overdue Tasks</div><div style={{ ...S.kpiV, color: overdue.length > 0 ? C.er : C.t7 }}>{overdue.length}</div></div>
+        <div style={S.kpi}><div style={S.kpiL}>Overdue Reviews</div><div style={{ ...S.kpiV, color: overdueReviews.length > 0 ? C.er : C.t7 }}>{overdueReviews.length}</div></div>
+        <div style={S.kpi}><div style={S.kpiL}>Never Reviewed</div><div style={{ ...S.kpiV, color: neverReviewed.length > 0 ? C.wn : C.t7 }}>{neverReviewed.length}</div></div>
+        <div style={S.kpi}><div style={S.kpiL}>Raises (90d)</div><div style={S.kpiV}>{raisesLast90.length}</div></div>
         <div style={S.kpi}><div style={S.kpiL}>Completed (30d)</div><div style={S.kpiV}>{last30.length}</div></div>
       </div>
       <div style={S.card}>
@@ -2046,6 +2448,8 @@ function SetupTab() {
     { label: `${CONFIG.lists.notes} list`,          ok: true, hint: "Stores coaching, discipline, PIP, 1:1, praise notes." },
     { label: `${CONFIG.lists.audit} list`,          ok: true, hint: "Audit trail of permission changes." },
     { label: `${CONFIG.lists.files} document library`, ok: true, hint: "Per-employee HR documents." },
+    { label: `${CONFIG.lists.reviews} list`,        ok: true, hint: "Quarterly performance reviews. Re-run provision script if missing." },
+    { label: `${CONFIG.lists.payChanges} list`,     ok: true, hint: "Compensation history per employee. Re-run provision script if missing." },
   ];
 
   const seedApps = async () => {
@@ -2125,7 +2529,7 @@ function SetupTab() {
 // ============================================================
 function App() {
   const { acct, token, login, logout, refresh, err: authErr, ready } = useMsal();
-  const [state, setState] = useState({ employees: [], journeys: [], templates: [], journeyTasks: [], config: {}, apps: [], notes: [], audit: [] });
+  const [state, setState] = useState({ employees: [], journeys: [], templates: [], journeyTasks: [], config: {}, apps: [], notes: [], audit: [], reviews: [], payChanges: [] });
   const [loading, setLoading] = useState(false);
   const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
   const [loadErr, setLoadErr] = useState(null);
@@ -2135,6 +2539,10 @@ function App() {
   const [openEmployeeEmail, setOpenEmployeeEmail] = useState(null);
   const [editNoteId, setEditNoteId] = useState(null);
   const [newNoteFor, setNewNoteFor] = useState(null);
+  const [editReviewId, setEditReviewId] = useState(null);
+  const [newReviewFor, setNewReviewFor] = useState(null);
+  const [editPayId, setEditPayId] = useState(null);
+  const [newPayFor, setNewPayFor] = useState(null);
 
   const currentEmail = (acct?.username || "").toLowerCase();
   const me = state.employees.find(e => (e.Email || "").toLowerCase() === currentEmail);
@@ -2243,6 +2651,42 @@ function App() {
     // ── Apps registry ──
     updateApp: async (id, patch) => withToken(async tk => { await gPatch(tk, iUrl(CONFIG.lists.apps, id), patch); }),
     createApp:  async (fields) => withToken(async tk => { await gPost(tk, lUrl(CONFIG.lists.apps), { Title: fields.Title, ...fields, Roles: typeof fields.Roles === "string" ? fields.Roles : JSON.stringify(fields.Roles || []) }); }),
+
+    // ── Quarterly Reviews ──
+    openReviewEdit: id => setEditReviewId(id),
+    openReviewNew:  email => setNewReviewFor((email || "").toLowerCase()),
+    createReview: async (fields) => withToken(async tk => {
+      const r = await gPost(tk, lUrl(CONFIG.lists.reviews), { Title: fields.Title || `${fields.ReviewPeriod} — ${fields.EmployeeEmail}`, ReviewerEmail: fields.ReviewerEmail || currentEmail, ...fields });
+      const created = { id: r.id, ...r.fields };
+      setState(s => ({ ...s, reviews: [...s.reviews, created] }));
+      return created;
+    }),
+    updateReview: async (id, patch) => withToken(async tk => {
+      await gPatch(tk, iUrl(CONFIG.lists.reviews, id), patch);
+      setState(s => ({ ...s, reviews: s.reviews.map(r => String(r.id) === String(id) ? { ...r, ...patch } : r) }));
+    }),
+    deleteReview: async (id) => withToken(async tk => {
+      await gDelete(tk, `${SITE}/lists/${CONFIG.lists.reviews}/items/${id}`);
+      setState(s => ({ ...s, reviews: s.reviews.filter(r => String(r.id) !== String(id)) }));
+    }),
+
+    // ── Pay Changes ──
+    openPayEdit: id => setEditPayId(id),
+    openPayNew:  email => setNewPayFor((email || "").toLowerCase()),
+    createPayChange: async (fields) => withToken(async tk => {
+      const r = await gPost(tk, lUrl(CONFIG.lists.payChanges), { Title: fields.Title || `${fields.ChangeType} — ${fields.EmployeeEmail}`, ApprovedBy: fields.ApprovedBy || currentEmail, ...fields });
+      const created = { id: r.id, ...r.fields };
+      setState(s => ({ ...s, payChanges: [...s.payChanges, created] }));
+      return created;
+    }),
+    updatePayChange: async (id, patch) => withToken(async tk => {
+      await gPatch(tk, iUrl(CONFIG.lists.payChanges, id), patch);
+      setState(s => ({ ...s, payChanges: s.payChanges.map(p => String(p.id) === String(id) ? { ...p, ...patch } : p) }));
+    }),
+    deletePayChange: async (id) => withToken(async tk => {
+      await gDelete(tk, `${SITE}/lists/${CONFIG.lists.payChanges}/items/${id}`);
+      setState(s => ({ ...s, payChanges: s.payChanges.filter(p => String(p.id) !== String(id)) }));
+    }),
   }), [withToken, reload, state.employees, state.apps, currentEmail]);
 
   const ctxValue = { state, actions, role, currentEmail, me };
@@ -2255,10 +2699,22 @@ function App() {
   const myCount = state.journeyTasks.filter(t => (t.AssigneeEmail || "").toLowerCase() === currentEmail && t.Status !== "Done").length;
 
   const isAdmin = role === "Admin" || role === "HR";
+  const isManagerOrUp = isAdmin || role === "Manager";
+  // Reviews tab count = overdue + due-soon + never, for the user's scope
+  const reviewCount = useMemo(() => {
+    const scope = role === "Admin" || role === "HR" ? state.employees.filter(e => e.EmployeeActive !== false)
+      : role === "Manager" ? state.employees.filter(e => e.EmployeeActive !== false && (e.ManagerEmail || "").toLowerCase() === currentEmail)
+      : state.employees.filter(e => (e.Email || "").toLowerCase() === currentEmail);
+    return scope.reduce((n, e) => {
+      const s = reviewStatusFor(e.Email, state.reviews);
+      return n + ((s.state === "overdue" || s.state === "due-soon" || s.state === "never") ? 1 : 0);
+    }, 0);
+  }, [state.employees, state.reviews, role, currentEmail]);
   const tabs = [
     { key: "onboarding", label: "Onboarding", count: obCount },
     { key: "offboarding", label: "Offboarding", count: offCount },
     { key: "mytasks", label: "My Tasks", count: myCount },
+    isManagerOrUp && { key: "reviews", label: "Reviews", count: reviewCount },
     isAdmin && { key: "employees", label: "Employees" },
     isAdmin && { key: "templates", label: "Templates" },
     isAdmin && { key: "reports", label: "Reports" },
@@ -2277,6 +2733,7 @@ function App() {
             tab === "onboarding" ? <JourneysTab type="Onboarding" /> :
             tab === "offboarding" ? <JourneysTab type="Offboarding" /> :
             tab === "mytasks" ? <MyTasksTab /> :
+            tab === "reviews" ? <ReviewsTab /> :
             tab === "employees" ? <EmployeesTab /> :
             tab === "templates" ? <TemplatesTab /> :
             tab === "reports" ? <ReportsTab /> :
@@ -2286,6 +2743,8 @@ function App() {
         {openJourneyId && <JourneyDetailModal journeyId={openJourneyId} onClose={() => setOpenJourneyId(null)} />}
         {openEmployeeEmail && <EmployeeDetailModal email={openEmployeeEmail} onClose={() => setOpenEmployeeEmail(null)} />}
         {(editNoteId || newNoteFor) && <NoteEditModal noteId={editNoteId} forEmail={newNoteFor} onClose={() => { setEditNoteId(null); setNewNoteFor(null); }} />}
+        {(editReviewId || newReviewFor) && <ReviewEditModal reviewId={editReviewId} forEmail={newReviewFor} onClose={() => { setEditReviewId(null); setNewReviewFor(null); }} />}
+        {(editPayId || newPayFor) && <PayChangeEditModal payId={editPayId} forEmail={newPayFor} onClose={() => { setEditPayId(null); setNewPayFor(null); }} />}
       </div>
     </DataCtx.Provider>
   );

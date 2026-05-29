@@ -115,17 +115,25 @@ const S = {
 const META_GROUP_RULES = {
   "Common - W-2": {
     journeyType: "Onboarding",
-    label: "Common — W-2 onboarding (excludes Virtual Assistant)",
-    // Runs for every onboarding group EXCEPT Virtual Assistant (1099 contractor)
-    appliesTo: (selectedGroup) => selectedGroup !== "Virtual Assistant",
+    label: "Common — W-2 onboarding (excludes Virtual Assistant & 1099 contractors)",
+    // Runs for every onboarding group EXCEPT Virtual Assistant (1099 contractor) and
+    // any hire flagged as a 1099 contractor — those get the Common - 1099 track instead.
+    appliesTo: (selectedGroup, opts) => selectedGroup !== "Virtual Assistant" && !opts?.isContractor,
+  },
+  "Common - 1099": {
+    journeyType: "Onboarding",
+    label: "Common — 1099 contractor onboarding",
+    // Runs only when the hire is flagged as a 1099 contractor. Virtual Assistant has its
+    // own dedicated contractor track, so this meta-group does not also pile on for VA.
+    appliesTo: (selectedGroup, opts) => !!opts?.isContractor && selectedGroup !== "Virtual Assistant",
   },
 };
 function isMetaGroup(name) { return Object.prototype.hasOwnProperty.call(META_GROUP_RULES, name); }
-function templateAppliesToGroup(tpl, selectedGroup) {
+function templateAppliesToGroup(tpl, selectedGroup, opts) {
   if (!tpl.TemplateGroup) return true;                       // universal
   if (tpl.TemplateGroup === selectedGroup) return true;      // exact match
   const meta = META_GROUP_RULES[tpl.TemplateGroup];
-  if (meta && meta.appliesTo(selectedGroup)) return true;    // meta-group hit
+  if (meta && meta.appliesTo(selectedGroup, opts)) return true; // meta-group hit
   return false;
 }
 
@@ -423,6 +431,23 @@ const DEFAULT_TEMPLATES = [
   { JourneyType:"Onboarding", TemplateGroup:"Off Site Team Member", Phase:"Weeks 2-4", Title:"Paired work covering multiple properties", AssigneeRole:"Manager", OffsetDays:14, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"Off Site Team Member", Phase:"Weeks 2-4", Title:"Begin solo low-risk tasks across portfolio", AssigneeRole:"Employee", OffsetDays:14, Required:true, Notes:"" },
   { JourneyType:"Onboarding", TemplateGroup:"Off Site Team Member", Phase:"Weeks 2-4", Title:"Complete required NewShire University modules including fair housing", AssigneeRole:"Employee", OffsetDays:14, Required:true, Notes:"" },
+
+  // ═════════════════════════════════════════════════════════════════════
+  // ONBOARDING — Common - 1099  (independent contractor; replaces the W-2
+  // paperwork track when the "1099 contractor" box is checked at journey start.
+  // Group-neutral so it layers onto On Site / Off Site / Maintenance / Corporate.
+  // Excluded for Virtual Assistant, which has its own dedicated contractor track.)
+  // ═════════════════════════════════════════════════════════════════════
+  { JourneyType:"Onboarding", TemplateGroup:"Common - 1099", Phase:"Pre-Engagement", Title:"Independent Contractor Agreement signed (NOT an employment offer)", AssigneeRole:"Admin", OffsetDays:-21, Required:true, Notes:"" },
+  { JourneyType:"Onboarding", TemplateGroup:"Common - 1099", Phase:"Pre-Engagement", Title:"Scope of Work / deliverables defined and signed", AssigneeRole:"Admin", OffsetDays:-21, Required:true, Notes:"Define deliverables, not hours/schedule — preserves contractor status." },
+  { JourneyType:"Onboarding", TemplateGroup:"Common - 1099", Phase:"Pre-Engagement", Title:"Confidentiality / NDA signed", AssigneeRole:"Admin", OffsetDays:-21, Required:true, Notes:"" },
+  { JourneyType:"Onboarding", TemplateGroup:"Common - 1099", Phase:"Pre-Engagement", Title:"Acknowledge contractor status: no tax withholding, no employee benefits or wage protections", AssigneeRole:"Employee", OffsetDays:-21, Required:true, Notes:"Replaces the W-2 I-9 / W-4 / SC W-4 / direct-deposit packet." },
+  { JourneyType:"Onboarding", TemplateGroup:"Common - 1099", Phase:"Pre-Engagement", Title:"W-9 collected (US) OR W-8BEN (foreign contractor)", AssigneeRole:"Accounting", OffsetDays:-21, Required:true, Notes:"Needed for 1099-NEC reporting." },
+  { JourneyType:"Onboarding", TemplateGroup:"Common - 1099", Phase:"Pre-Engagement", Title:"If applicable: collect Certificate of Insurance (GL / workers' comp waiver)", AssigneeRole:"Admin", OffsetDays:-14, Required:false, Notes:"Common for on-site or trade contractors." },
+  { JourneyType:"Onboarding", TemplateGroup:"Common - 1099", Phase:"T-7 Days", Title:"Confirm pay rate, invoicing process, and payment frequency", AssigneeRole:"Accounting", OffsetDays:-7, Required:true, Notes:"Contractor invoices; paid outside payroll." },
+  { JourneyType:"Onboarding", TemplateGroup:"Common - 1099", Phase:"T-5 Days", Title:"Provision only the system access the engagement requires", AssigneeRole:"Admin", OffsetDays:-5, Required:true, Notes:"Scope access to the deliverable; avoid employee-style full access." },
+  { JourneyType:"Onboarding", TemplateGroup:"Common - 1099", Phase:"Compliance", Title:"Misclassification risk review: behavioral control, financial control, relationship (IRS/DOL)", AssigneeRole:"Admin", OffsetDays:0, Required:true, Notes:"Worker should control means & methods. Re-evaluate if scope drifts toward employee-like control." },
+  { JourneyType:"Onboarding", TemplateGroup:"Common - 1099", Phase:"Annual", Title:"1099-NEC issued at year end (US contractors paid ≥ $600)", AssigneeRole:"Accounting", OffsetDays:365, Required:true, Notes:"" },
 
   // ═════════════════════════════════════════════════════════════════════
   // ONBOARDING — Virtual Assistant  (1099 contractor — distinct from W-2)
@@ -1034,7 +1059,7 @@ function StartJourneyModal({ type, onClose }) {
   const [f, setF] = useState({
     EmployeeEmail: "", EmployeeName: "", JobTitle: "", ManagerEmail: "",
     Department: "", StartDate: isOnboarding ? todayIso() : "", EndDate: !isOnboarding ? todayIso() : "",
-    Notes: "", existingEmpId: "", OffboardReason: "",
+    Notes: "", existingEmpId: "", OffboardReason: "", IsContractor: false,
     TemplateGroup: (CONFIG.templateGroups[type] || [])[0] || "",
   });
   // Permission selections: { ColumnName: roleValue }
@@ -1048,9 +1073,10 @@ function StartJourneyModal({ type, onClose }) {
 
   // Generation rule: include templates that are universal (empty group), exact-group
   // match, or a meta-group whose rule applies (e.g. Common - W-2). Sorted chronologically.
+  const tplOpts = { isContractor: isOnboarding && f.IsContractor };
   const usableTemplates = state.templates
     .filter(t => t.JourneyType === type && t.Active !== false)
-    .filter(t => templateAppliesToGroup(t, f.TemplateGroup))
+    .filter(t => templateAppliesToGroup(t, f.TemplateGroup, tplOpts))
     .sort((a, b) => (a.OffsetDays || 0) - (b.OffsetDays || 0) || (a.Title || "").localeCompare(b.Title || ""));
   const availableGroups = getAvailableGroups(state, type);
 
@@ -1085,8 +1111,9 @@ function StartJourneyModal({ type, onClose }) {
     try {
       const anchor = !isOnboarding ? f.EndDate : f.StartDate;
       // 1. Upsert employee on onboarding (creates Employees row if new)
+      let empRecord = null;
       if (isOnboarding) {
-        await actions.upsertEmployee({
+        empRecord = await actions.upsertEmployee({
           Title: f.EmployeeName,
           Email: f.EmployeeEmail.toLowerCase(),
           JobTitle: f.JobTitle,
@@ -1116,7 +1143,7 @@ function StartJourneyModal({ type, onClose }) {
         const cleanPerms = {};
         for (const [k, v2] of Object.entries(perms)) if (v2) cleanPerms[k] = v2;
         if (Object.keys(cleanPerms).length > 0) {
-          await actions.setEmployeePermissions(f.EmployeeEmail.toLowerCase(), cleanPerms, "Initial onboarding permissions", String(jrn.id));
+          await actions.setEmployeePermissions(f.EmployeeEmail.toLowerCase(), cleanPerms, "Initial onboarding permissions", String(jrn.id), empRecord);
         }
       }
       // 4. Create tasks from templates
@@ -1189,7 +1216,7 @@ function StartJourneyModal({ type, onClose }) {
                 const all = state.templates.filter(t => t.JourneyType === type && t.Active !== false);
                 const universal = all.filter(t => !t.TemplateGroup).length;
                 const groupSpecific = all.filter(t => t.TemplateGroup === f.TemplateGroup).length;
-                const metas = all.filter(t => isMetaGroup(t.TemplateGroup) && templateAppliesToGroup(t, f.TemplateGroup));
+                const metas = all.filter(t => isMetaGroup(t.TemplateGroup) && templateAppliesToGroup(t, f.TemplateGroup, tplOpts));
                 const metaBreakdown = {};
                 metas.forEach(t => { metaBreakdown[t.TemplateGroup] = (metaBreakdown[t.TemplateGroup] || 0) + 1; });
                 const parts = [];
@@ -1200,6 +1227,17 @@ function StartJourneyModal({ type, onClose }) {
               })()}.
             </div>
           </div>
+          {isOnboarding && f.TemplateGroup !== "Virtual Assistant" && (
+            <label style={{ display: "flex", alignItems: "flex-start", gap: 8, fontSize: 13, background: f.IsContractor ? C.g0 : C.b1, border: `1px solid ${f.IsContractor ? C.g4 : C.b2}`, borderRadius: 6, padding: "10px 12px" }}>
+              <input type="checkbox" style={{ marginTop: 2 }} checked={f.IsContractor} onChange={e => setF({ ...f, IsContractor: e.target.checked })} />
+              <span>
+                <strong>1099 independent contractor</strong> (not W-2 payroll)
+                <div style={{ fontSize: 11, color: C.b4, marginTop: 2 }}>
+                  Swaps the W-2 paperwork track (I-9, W-4, direct deposit, benefits) for the contractor track: ICA, W-9/W-8BEN, scope of work, and a misclassification risk review.
+                </div>
+              </span>
+            </label>
+          )}
           <div>
             <label style={S.label}>{isOnboarding ? "Existing employee (rehire/transfer)" : "Select active employee *"}</label>
             <select style={S.select} value={f.existingEmpId} onChange={e => onPickEmployee(e.target.value)}>
@@ -1220,7 +1258,11 @@ function StartJourneyModal({ type, onClose }) {
             <div><label style={S.label}>Department</label><input style={S.input} value={f.Department} onChange={e => setF({ ...f, Department: e.target.value })} /></div>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-            <div><label style={S.label}>Manager Email</label><input style={S.input} value={f.ManagerEmail} onChange={e => setF({ ...f, ManagerEmail: e.target.value.toLowerCase() })} /></div>
+            <div>
+              <label style={S.label}>Direct Supervisor Email</label>
+              <input style={S.input} value={f.ManagerEmail} placeholder="who this person reports to" onChange={e => setF({ ...f, ManagerEmail: e.target.value.toLowerCase() })} />
+              <div style={{ fontSize: 11, color: C.b4, marginTop: 4 }}>The person this hire reports to day-to-day — used to route Manager onboarding tasks.</div>
+            </div>
             {isOnboarding ? (
               <div><label style={S.label}>Start Date *</label><input style={S.input} type="date" value={f.StartDate} onChange={e => setF({ ...f, StartDate: e.target.value })} /></div>
             ) : (
@@ -1265,7 +1307,7 @@ function StartJourneyModal({ type, onClose }) {
             <div style={S.sec}>New Hire</div>
             <div style={{ fontSize: 14, fontWeight: 700, color: C.t7 }}>{f.EmployeeName} <span style={{ fontWeight: 400, color: C.b4 }}>· {f.EmployeeEmail}</span></div>
             <div style={{ fontSize: 12, color: C.b4, marginTop: 2 }}>{f.JobTitle || "—"}{f.Department ? ` · ${f.Department}` : ""} · Manager: {f.ManagerEmail || "—"} · Starts {fmtDate(f.StartDate)}</div>
-            <div style={{ marginTop: 6 }}><Badge type="pu">{f.TemplateGroup || "Common"}</Badge></div>
+            <div style={{ marginTop: 6, display: "flex", gap: 6, flexWrap: "wrap" }}><Badge type="pu">{f.TemplateGroup || "Common"}</Badge>{f.IsContractor && <Badge type="wn">1099 Contractor</Badge>}</div>
           </div>
           <div style={S.card}>
             <div style={S.sec}>App Permissions</div>
@@ -1329,10 +1371,17 @@ function TemplatesTab() {
     .sort((a, b) => (a.OffsetDays || 0) - (b.OffsetDays || 0) || (a.Title || "").localeCompare(b.Title || ""));
 
   const seedDefaults = async () => {
-    if (!confirm(`Seed ${DEFAULT_TEMPLATES.length} default templates? This adds to existing templates; it does not replace them.`)) return;
+    // Idempotent: skip any default that already exists (matched on type + group + title),
+    // so re-seeding after new defaults are added only creates the genuinely-new tasks.
+    const keyOf = t => `${t.JourneyType}|${t.TemplateGroup || ""}|${(t.Title || "").trim()}`;
+    const have = new Set(state.templates.map(keyOf));
+    const toSeed = DEFAULT_TEMPLATES.filter(t => !have.has(keyOf(t)));
+    if (toSeed.length === 0) { alert("All default templates already exist — nothing to seed."); return; }
+    const skipped = DEFAULT_TEMPLATES.length - toSeed.length;
+    if (!confirm(`Seed ${toSeed.length} new default template task(s)?${skipped ? ` ${skipped} already present will be skipped.` : ""}`)) return;
     setSeed(true);
     try {
-      for (const tpl of DEFAULT_TEMPLATES) {
+      for (const tpl of toSeed) {
         await actions.createTemplate({ ...tpl, Active: true });
       }
       await actions.reload();
@@ -2617,9 +2666,12 @@ function App() {
       setState(s => ({ ...s, employees: [...s.employees, created] }));
       return created;
     }),
-    setEmployeePermissions: async (employeeEmail, perms, reason, journeyId) => withToken(async tk => {
+    setEmployeePermissions: async (employeeEmail, perms, reason, journeyId, empRecord) => withToken(async tk => {
       const email = (employeeEmail || "").toLowerCase();
-      const existing = state.employees.find(e => (e.Email || "").toLowerCase() === email);
+      // Prefer state, but fall back to a record passed in by the caller (e.g. a hire
+      // just created via upsertEmployee that isn't in state.employees yet this render).
+      const existing = state.employees.find(e => (e.Email || "").toLowerCase() === email)
+        || (empRecord && (empRecord.Email || "").toLowerCase() === email ? empRecord : null);
       if (!existing) throw new Error(`Employee not found: ${email}`);
       const patch = {}; const audits = [];
       for (const [col, newRole] of Object.entries(perms)) {

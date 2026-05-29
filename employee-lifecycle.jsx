@@ -1745,22 +1745,55 @@ function currentQuarterLabel(date = new Date()) {
   const q = Math.floor(date.getMonth() / 3) + 1;
   return `${date.getFullYear()}-Q${q}`;
 }
-function lastConductedReview(employeeEmail, reviews) {
+const REVIEW_NEW_HIRE_MILESTONES = [30, 60, 90]; // days after StartDate for a new hire's first three reviews
+const REVIEW_QUARTER_DAYS = 91;                  // cadence once the 90-day review is done
+function reviewDateOnly(s) {
+  if (!s) return "";
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? String(s).slice(0, 10) : d.toISOString().slice(0, 10);
+}
+function conductedReviews(employeeEmail, reviews) {
   return reviews
     .filter(r => (r.EmployeeEmail || "").toLowerCase() === (employeeEmail || "").toLowerCase() && r.ConductedDate && r.Status !== "Cancelled")
-    .sort((a, b) => (b.ConductedDate || "").localeCompare(a.ConductedDate || ""))[0] || null;
+    .sort((a, b) => (b.ConductedDate || "").localeCompare(a.ConductedDate || ""));
 }
-// Returns { state: "ok"|"due-soon"|"overdue"|"never", daysSinceLast, daysUntilDue, lastReview, nextDueDate }
-function reviewStatusFor(employeeEmail, reviews) {
-  const last = lastConductedReview(employeeEmail, reviews);
-  if (!last) return { state: "never", lastReview: null, daysSinceLast: null, nextDueDate: null, daysUntilDue: null };
-  const dSince = Math.floor((Date.now() - new Date(last.ConductedDate).getTime()) / 86400000);
-  const nextDue = addDays(last.ConductedDate, CONFIG.reviewIntervalDays);
+function lastConductedReview(employeeEmail, reviews) {
+  return conductedReviews(employeeEmail, reviews)[0] || null;
+}
+// Returns { state: "ok"|"due-soon"|"overdue"|"never"|"not-started", daysSinceLast, daysUntilDue, lastReview, nextDueDate }
+// New hires follow a 30 / 60 / 90-day schedule anchored to StartDate, then quarterly after
+// the 90-day review. Employees whose StartDate is in the future are never flagged ("not-started").
+function reviewStatusFor(employee, reviews) {
+  const email = (employee?.Email || "").toLowerCase();
+  const startIso = reviewDateOnly(employee?.StartDate);
+  const done = conductedReviews(email, reviews);
+  const last = done[0] || null;
+  const n = done.length;
+  const daysSinceLast = last ? Math.floor((Date.now() - new Date(last.ConductedDate).getTime()) / 86400000) : null;
+
+  // Hasn't started yet → nothing is due; never overdue.
+  if (startIso && daysFromNow(startIso) > 0) {
+    const firstDue = addDays(startIso, REVIEW_NEW_HIRE_MILESTONES[0]);
+    return { state: "not-started", lastReview: last, daysSinceLast, nextDueDate: firstDue, daysUntilDue: daysFromNow(firstDue) };
+  }
+
+  // Next due date: 30/60/90 from start for the first three, then quarterly from the last review.
+  let nextDue = null;
+  if (n < REVIEW_NEW_HIRE_MILESTONES.length) {
+    if (startIso) nextDue = addDays(startIso, REVIEW_NEW_HIRE_MILESTONES[n]);
+    else if (last) nextDue = addDays(reviewDateOnly(last.ConductedDate), REVIEW_QUARTER_DAYS);
+  } else if (last) {
+    nextDue = addDays(reviewDateOnly(last.ConductedDate), REVIEW_QUARTER_DAYS);
+  }
+
+  // No StartDate on file and never reviewed — can't schedule; surface as "never" for data cleanup.
+  if (!nextDue) return { state: "never", lastReview: last, daysSinceLast, nextDueDate: null, daysUntilDue: null };
+
   const daysUntilDue = daysFromNow(nextDue);
   let st = "ok";
-  if (dSince > CONFIG.reviewOverdueDays) st = "overdue";
-  else if (daysUntilDue !== null && daysUntilDue <= 14) st = "due-soon";
-  return { state: st, lastReview: last, daysSinceLast: dSince, nextDueDate: nextDue, daysUntilDue };
+  if (daysUntilDue < 0) st = "overdue";
+  else if (daysUntilDue <= 14) st = "due-soon";
+  return { state: st, lastReview: last, daysSinceLast, nextDueDate: nextDue, daysUntilDue };
 }
 function fmtMoney(n) { if (n == null || isNaN(n)) return "—"; return "$" + Number(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
 
@@ -1969,7 +2002,7 @@ function EmployeeDetailModal({ email, onClose }) {
   const audit    = useMemo(() => emp ? state.audit.filter(a => (a.EmployeeEmail || "").toLowerCase() === email).sort((a, b) => (b.ChangedAt || "").localeCompare(a.ChangedAt || "")) : [], [emp, state.audit, email]);
   const reviews  = useMemo(() => emp ? state.reviews.filter(r => (r.EmployeeEmail || "").toLowerCase() === email).sort((a, b) => (b.ConductedDate || b.DueDate || "").localeCompare(a.ConductedDate || a.DueDate || "")) : [], [emp, state.reviews, email]);
   const pay      = useMemo(() => emp ? state.payChanges.filter(p => (p.EmployeeEmail || "").toLowerCase() === email).sort((a, b) => (b.EffectiveDate || "").localeCompare(a.EffectiveDate || "")) : [], [emp, state.payChanges, email]);
-  const reviewStatus = useMemo(() => reviewStatusFor(email, state.reviews), [state.reviews, email]);
+  const reviewStatus = useMemo(() => reviewStatusFor(emp, state.reviews), [state.reviews, emp]);
 
   // Coaching aggregation — must run unconditionally to satisfy rules-of-hooks
   const coaching = useMemo(() => {
@@ -2088,10 +2121,11 @@ function EmployeeDetailModal({ email, onClose }) {
           <div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
-                {reviewStatus.state === "overdue" && <Badge type="er">⚠ Overdue: {reviewStatus.daysSinceLast} days since last review</Badge>}
-                {reviewStatus.state === "due-soon" && <Badge type="wn">Due in {reviewStatus.daysUntilDue} days</Badge>}
-                {reviewStatus.state === "ok" && reviewStatus.lastReview && <Badge type="ok">Last: {fmtDate(reviewStatus.lastReview.ConductedDate)} · next due {fmtDate(reviewStatus.nextDueDate)}</Badge>}
-                {reviewStatus.state === "never" && <Badge type="neutral">No reviews on file yet</Badge>}
+                {reviewStatus.state === "overdue" && <Badge type="er">⚠ Overdue{reviewStatus.lastReview ? `: ${reviewStatus.daysSinceLast} days since last review` : ` since ${fmtDate(reviewStatus.nextDueDate)}`}</Badge>}
+                {reviewStatus.state === "due-soon" && <Badge type="wn">Due in {reviewStatus.daysUntilDue} days{reviewStatus.lastReview ? "" : " (first review)"}</Badge>}
+                {reviewStatus.state === "ok" && <Badge type="ok">{reviewStatus.lastReview ? `Last: ${fmtDate(reviewStatus.lastReview.ConductedDate)} · ` : "First review "}next due {fmtDate(reviewStatus.nextDueDate)}</Badge>}
+                {reviewStatus.state === "never" && <Badge type="neutral">No reviews — add a start date to schedule</Badge>}
+                {reviewStatus.state === "not-started" && <Badge type="neutral">Starts {fmtDate(emp.StartDate)} · first review due {fmtDate(reviewStatus.nextDueDate)}</Badge>}
               </div>
               {canEdit && <button style={S.btn(C.hdr)} onClick={() => actions.openReviewNew(email)}>+ New Review</button>}
             </div>
@@ -2360,14 +2394,15 @@ function ReviewsTab() {
   }, [state.employees, role, currentEmail]);
 
   const rows = useMemo(() => visibleEmployees.map(e => {
-    const status = reviewStatusFor(e.Email, state.reviews);
+    const status = reviewStatusFor(e, state.reviews);
     return { emp: e, ...status };
   }), [visibleEmployees, state.reviews]);
 
-  const overdue  = rows.filter(r => r.state === "overdue");
-  const dueSoon  = rows.filter(r => r.state === "due-soon");
-  const okSoon   = rows.filter(r => r.state === "ok");
-  const never    = rows.filter(r => r.state === "never");
+  const overdue    = rows.filter(r => r.state === "overdue");
+  const dueSoon    = rows.filter(r => r.state === "due-soon");
+  const okSoon     = rows.filter(r => r.state === "ok");
+  const never      = rows.filter(r => r.state === "never");
+  const notStarted = rows.filter(r => r.state === "not-started");
 
   const Card = ({ r, badgeType, badge }) => (
     <div onClick={() => actions.openEmployee(r.emp.Email)} style={{ cursor: "pointer", background: C.wh, border: `1px solid ${C.b1}`, borderRadius: 6, padding: 12, boxShadow: "0 1px 2px rgba(28,55,64,.04)" }}
@@ -2406,15 +2441,17 @@ function ReviewsTab() {
         <div style={S.kpi}><div style={S.kpiL}>Due ≤ 14 days</div><div style={{ ...S.kpiV, color: dueSoon.length > 0 ? C.wn : C.t7 }}>{dueSoon.length}</div></div>
         <div style={S.kpi}><div style={S.kpiL}>On Track</div><div style={S.kpiV}>{okSoon.length}</div></div>
         <div style={S.kpi}><div style={S.kpiL}>Never Reviewed</div><div style={{ ...S.kpiV, color: never.length > 0 ? C.wn : C.t7 }}>{never.length}</div></div>
+        {notStarted.length > 0 && <div style={S.kpi}><div style={S.kpiL}>Not Started Yet</div><div style={S.kpiV}>{notStarted.length}</div></div>}
       </div>
       <div style={{ fontSize: 12, color: C.b4, marginBottom: 10 }}>
         {role === "Admin" || role === "HR" ? "Showing all active employees." : role === "Manager" ? "Showing your direct reports." : "Showing your own review status."}
-        {" "}Cadence: review every {CONFIG.reviewIntervalDays} days; flagged overdue at {CONFIG.reviewOverdueDays} days.
+        {" "}Cadence: new hires reviewed at 30, 60, and 90 days from start, then every quarter. Employees who haven't started yet aren't flagged.
       </div>
-      <Section title="Overdue" items={overdue} type="er" badge={r => `${r.daysSinceLast}d since last`} />
+      <Section title="Overdue" items={overdue} type="er" badge={r => r.daysSinceLast != null ? `${r.daysSinceLast}d since last` : `${Math.abs(r.daysUntilDue)}d overdue`} />
       <Section title="Due Soon" items={dueSoon} type="wn" badge={r => `${r.daysUntilDue}d to due`} />
-      <Section title="Never Reviewed" items={never} type="wn" badge={() => "—"} />
+      <Section title="Never Reviewed" items={never} type="wn" badge={() => "no start date"} />
       <Section title="On Track" items={okSoon} type="ok" badge={r => `next ${fmtDate(r.nextDueDate)}`} />
+      <Section title="Not Started Yet" items={notStarted} type="neutral" badge={r => `starts ${fmtDate(r.emp.StartDate)}`} />
     </div>
   );
 }
@@ -2433,8 +2470,8 @@ function ReportsTab() {
   overdue.forEach(t => { const r = t.AssigneeRole || "Unassigned"; byRole[r] = (byRole[r] || 0) + 1; });
   const last30 = state.journeys.filter(j => j.Status === "Complete" && j.Modified && (Date.now() - new Date(j.Modified).getTime()) / 86400000 <= 30);
   const activeEmps = state.employees.filter(e => e.EmployeeActive !== false);
-  const overdueReviews = activeEmps.filter(e => reviewStatusFor(e.Email, state.reviews).state === "overdue");
-  const neverReviewed  = activeEmps.filter(e => reviewStatusFor(e.Email, state.reviews).state === "never");
+  const overdueReviews = activeEmps.filter(e => reviewStatusFor(e, state.reviews).state === "overdue");
+  const neverReviewed  = activeEmps.filter(e => reviewStatusFor(e, state.reviews).state === "never");
   const raisesLast90 = state.payChanges.filter(p => p.EffectiveDate && (Date.now() - new Date(p.EffectiveDate).getTime()) / 86400000 <= 90 && (p.NewPay > (p.PreviousPay || 0)));
   return (
     <div>
@@ -2807,7 +2844,7 @@ function App() {
       : role === "Manager" ? state.employees.filter(e => e.EmployeeActive !== false && (e.ManagerEmail || "").toLowerCase() === currentEmail)
       : state.employees.filter(e => (e.Email || "").toLowerCase() === currentEmail);
     return scope.reduce((n, e) => {
-      const s = reviewStatusFor(e.Email, state.reviews);
+      const s = reviewStatusFor(e, state.reviews);
       return n + ((s.state === "overdue" || s.state === "due-soon" || s.state === "never") ? 1 : 0);
     }, 0);
   }, [state.employees, state.reviews, role, currentEmail]);

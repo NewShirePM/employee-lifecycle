@@ -801,6 +801,14 @@ function detectRoles(emp, email) {
 }
 // Primary (single) role — kept for backward-compatible call sites and badges.
 function detectRole(emp, email) { return primaryRole(detectRoles(emp, email)); }
+// A task belongs to me if it's assigned to my email, OR (when it has no specific
+// assignee email) it's a role-queue task whose AssigneeRole is one of my roles.
+// This is why selecting HR/IT/Admin surfaces those onboarding tasks in My Tasks.
+function taskIsMine(t, myEmail, hasRole) {
+  const email = (t.AssigneeEmail || "").toLowerCase();
+  if (email) return email === myEmail;
+  return !!t.AssigneeRole && hasRole(t.AssigneeRole);
+}
 
 // ============================================================
 // LOGIN SCREEN
@@ -1597,9 +1605,9 @@ function TemplateEditModal({ tpl, onClose }) {
 // MY TASKS
 // ============================================================
 function MyTasksTab() {
-  const { state, currentEmail } = useData();
+  const { state, currentEmail, hasRole } = useData();
   const myEmail = (currentEmail || "").toLowerCase();
-  const mine = state.journeyTasks.filter(t => (t.AssigneeEmail || "").toLowerCase() === myEmail && t.Status !== "Done")
+  const mine = state.journeyTasks.filter(t => t.Status !== "Done" && taskIsMine(t, myEmail, hasRole))
     .map(t => ({ ...t, _j: state.journeys.find(j => String(j.id) === String(t.JourneyId)) }))
     .sort((a, b) => (a.DueDate || "9999").localeCompare(b.DueDate || "9999"));
   const overdue = mine.filter(t => classifyDue(t.DueDate, t.Status) === "overdue");
@@ -1633,6 +1641,7 @@ function TaskRow({ t }) {
         <div style={{ fontWeight: 600, color: C.t7 }}>{t.Title}</div>
         <div style={{ fontSize: 11, color: C.b4, marginTop: 2 }}>
           {t._j?.JourneyType} · {t._j?.EmployeeName || t.EmployeeEmail} · <span style={{ color, fontWeight: 600 }}>Due {fmtDate(t.DueDate)}</span>
+          {!t.AssigneeEmail && t.AssigneeRole && <span style={{ marginLeft: 6 }}><Badge type="neutral" dot={false}>{t.AssigneeRole} queue</Badge></span>}
         </div>
         {t.Notes && <div style={{ fontSize: 11, color: C.b4, marginTop: 4 }}>{t.Notes}</div>}
       </div>
@@ -2909,7 +2918,7 @@ function App() {
 
   const obCount = state.journeys.filter(j => j.JourneyType === "Onboarding" && j.Status !== "Complete" && j.Status !== "Cancelled").length;
   const offCount = state.journeys.filter(j => j.JourneyType === "Offboarding" && j.Status !== "Complete" && j.Status !== "Cancelled").length;
-  const myCount = state.journeyTasks.filter(t => (t.AssigneeEmail || "").toLowerCase() === currentEmail && t.Status !== "Done").length;
+  const myCount = state.journeyTasks.filter(t => t.Status !== "Done" && taskIsMine(t, currentEmail, hasRole)).length;
 
   const isAdmin = hasRole("Admin", "HR");
   const isManagerOrUp = isAdmin || hasRole("Manager");

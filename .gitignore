@@ -10,3 +10,8 @@ Thumbs.db
 # Local secrets (if any are ever added)
 .env
 .env.local
+
+# Exported/local data dumps — contain employee PII. Never commit to this PUBLIC repo.
+# (The onboarding checklist .xlsx is intentionally tracked; data exports are not.)
+*.csv
+*.iqy

@@ -147,6 +147,26 @@ function daysFromNow(iso) { if (!iso) return null; return Math.floor((new Date(i
 function initials(name) { if (!name) return "?"; const p = name.trim().split(/\s+/); return p.length > 1 ? (p[0][0] + p[p.length - 1][0]).toUpperCase() : name.slice(0, 2).toUpperCase(); }
 function classifyDue(due, status) { if (status === "Done") return "done"; if (!due) return "none"; const d = daysFromNow(due); if (d == null) return "none"; if (d < 0) return "overdue"; if (d <= 3) return "soon"; return "ok"; }
 function uniq(arr) { return Array.from(new Set(arr.filter(Boolean))); }
+// Resolve the manager hierarchy from the Employees list so onboarding fills the same
+// ManagerName / Level2 / Level3 columns the rest of the list uses. Walks up to 3 levels
+// by following each manager's own ManagerEmail. Unresolved levels stay "" (cleanFields
+// drops them, leaving the column blank rather than erroring).
+function managerChain(managerEmail, employees) {
+  const out = { ManagerName: "", Level2ManagerEmail: "", Level2ManagerName: "", Level3ManagerEmail: "", Level3ManagerName: "" };
+  const find = email => employees.find(e => (e.Email || "").toLowerCase() === (email || "").toLowerCase());
+  const nameOf = e => (e && (e.Title || e.Name)) || "";
+  const m1 = find(managerEmail);
+  if (!m1) return out;
+  out.ManagerName = nameOf(m1);
+  out.Level2ManagerEmail = (m1.ManagerEmail || "").toLowerCase();
+  const m2 = find(out.Level2ManagerEmail);
+  if (!m2) return out;
+  out.Level2ManagerName = nameOf(m2);
+  out.Level3ManagerEmail = (m2.ManagerEmail || "").toLowerCase();
+  const m3 = find(out.Level3ManagerEmail);
+  if (m3) out.Level3ManagerName = nameOf(m3);
+  return out;
+}
 
 // ============================================================
 // GRAPH API
@@ -1113,12 +1133,18 @@ function StartJourneyModal({ type, onClose }) {
       // 1. Upsert employee on onboarding (creates Employees row if new)
       let empRecord = null;
       if (isOnboarding) {
+        const chain = managerChain((f.ManagerEmail || "").toLowerCase(), state.employees);
         empRecord = await actions.upsertEmployee({
           Title: f.EmployeeName,
+          Name: f.EmployeeName,
           Email: f.EmployeeEmail.toLowerCase(),
           JobTitle: f.JobTitle,
-          ManagerEmail: (f.ManagerEmail || "").toLowerCase(),
           Department: f.Department,
+          StartDate: f.StartDate || "",
+          PersonaType: f.TemplateGroup === "Virtual Assistant" ? "Virtual Assistant" : "Employee",
+          OnboardingStatus: "Pending",
+          ManagerEmail: (f.ManagerEmail || "").toLowerCase(),
+          ...chain,
           EmployeeActive: true,
         });
       }

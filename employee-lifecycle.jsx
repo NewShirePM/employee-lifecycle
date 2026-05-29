@@ -1388,13 +1388,30 @@ function TemplatesTab() {
     } catch (e) { alert("Seed failed: " + e.message); } finally { setSeed(false); }
   };
 
-  // How many DEFAULT_TEMPLATES are not yet in the list — drives the "Seed" button
-  // so it stays available when new defaults (e.g. Common - 1099) ship after first seed.
-  const missingDefaults = useMemo(() => {
-    const keyOf = t => `${t.JourneyType}|${t.TemplateGroup || ""}|${(t.Title || "").trim()}`;
-    const have = new Set(state.templates.map(keyOf));
-    return DEFAULT_TEMPLATES.filter(t => !have.has(keyOf(t))).length;
-  }, [state.templates]);
+  // New default GROUPS for this journey type that the user has none of yet.
+  // We only ever add wholesale-missing groups (e.g. the new Common - 1099 track),
+  // never individual tasks — so customized/edited templates are never duplicated
+  // or overwritten. A group the user already has even one task in is left alone.
+  const newGroups = useMemo(() => {
+    const present = new Set(state.templates.filter(t => t.JourneyType === filter).map(t => t.TemplateGroup || ""));
+    const defGroups = new Set(DEFAULT_TEMPLATES.filter(t => t.JourneyType === filter).map(t => t.TemplateGroup || ""));
+    return [...defGroups].filter(g => g && !present.has(g)); // skip the "" universal bucket
+  }, [state.templates, filter]);
+  const newGroupTasks = useMemo(
+    () => DEFAULT_TEMPLATES.filter(t => t.JourneyType === filter && newGroups.includes(t.TemplateGroup || "")),
+    [filter, newGroups]
+  );
+
+  const seedNewGroups = async () => {
+    if (newGroupTasks.length === 0) return;
+    const label = newGroups.join(", ");
+    if (!confirm(`Add ${newGroupTasks.length} task(s) from ${newGroups.length} new group(s) you don't have yet (${label})?\n\nYour existing and customized templates are left completely untouched.`)) return;
+    setSeed(true);
+    try {
+      for (const tpl of newGroupTasks) await actions.createTemplate({ ...tpl, Active: true });
+      await actions.reload();
+    } catch (e) { alert("Seed failed: " + e.message); } finally { setSeed(false); }
+  };
 
   // Group counts for the filter dropdown
   const groupCounts = useMemo(() => {
@@ -1431,7 +1448,8 @@ function TemplatesTab() {
             </select>
           </div>
           <div style={{ display: "flex", gap: 8 }}>
-            {canEdit && missingDefaults > 0 && <button style={S.btnO(C.t5)} onClick={seedDefaults} disabled={seed}>{seed ? "Seeding…" : state.templates.length === 0 ? "Seed defaults" : `Add ${missingDefaults} new default${missingDefaults === 1 ? "" : "s"}`}</button>}
+            {canEdit && state.templates.length === 0 && <button style={S.btnO(C.t5)} onClick={seedDefaults} disabled={seed}>{seed ? "Seeding…" : "Seed defaults"}</button>}
+            {canEdit && state.templates.length > 0 && newGroups.length > 0 && <button style={S.btnO(C.t5)} onClick={seedNewGroups} disabled={seed}>{seed ? "Seeding…" : `Add new group${newGroups.length === 1 ? "" : "s"}: ${newGroups.join(", ")}`}</button>}
             {canEdit && <button style={S.btn(C.hdr)} onClick={() => setEditing({ JourneyType: filter, TemplateGroup: groupFilter === "__all__" || groupFilter === "__common__" ? "" : groupFilter, Phase: "", Title: "", AssigneeRole: "HR", OffsetDays: 0, Required: true, Notes: "", Active: true })}>+ New Template</button>}
           </div>
         </div>

@@ -768,19 +768,39 @@ function Empty({ title, sub }) { return <div style={{ textAlign: "center", paddi
 // (see "VA" handling in App) — they exist in the data so HR/managers can
 // track 1099 contractor records, but VAs have no access to this app.
 const VALID_ELC_ROLES = new Set(["Admin", "HR", "IT", "Manager", "Employee", "VA"]);
-function detectRole(emp, email) {
-  if (CONFIG.adminEmails.includes((email || "").toLowerCase())) return "Admin";
-  if (!emp) return "Employee";
-  if (emp.ELCRole && emp.ELCRole !== "None" && VALID_ELC_ROLES.has(emp.ELCRole)) return emp.ELCRole;
-  const al = (emp.AccessLevel || "").toLowerCase();
-  if (al.includes("admin") || al.includes("owner")) return "Admin";
-  const title = (emp.JobTitle || "").toLowerCase();
-  if (title.includes("virtual assistant") || title === "va") return "VA";
-  if (title.includes("hr") || al.includes("hr")) return "HR";
-  if (title.includes("it") || al.includes("it")) return "IT";
-  if (title.includes("manager") || title.includes("regional") || title.includes("owner")) return "Manager";
-  return "Employee";
+// Roles that can be freely combined on one person (small-company reality — one person
+// may wear several hats). Employee is the baseline; VA is tracking-only and exclusive.
+const COMBINABLE_ROLES = ["Admin", "HR", "IT", "Manager"];
+const ROLE_RANK = { Admin: 5, HR: 4, IT: 3, Manager: 2, Employee: 1, VA: 0 };
+// ELCRole can now hold several roles as a delimited list (e.g. "Admin; HR; IT").
+// parseRoles normalizes a raw cell (string, delimited string, or array) into a clean array.
+function parseRoles(raw) {
+  if (raw == null) return [];
+  const arr = Array.isArray(raw) ? raw : String(raw).split(/[;,]/);
+  return arr.map(s => String(s).trim()).filter(s => s && s !== "None" && VALID_ELC_ROLES.has(s));
 }
+// Highest-ranked role — used for single-role displays and the VA access gate.
+function primaryRole(roles) {
+  return (roles || []).slice().sort((a, b) => (ROLE_RANK[b] ?? -1) - (ROLE_RANK[a] ?? -1))[0] || "Employee";
+}
+// Full set of roles a person holds (array). Super-admins are always Admin.
+function detectRoles(emp, email) {
+  if (CONFIG.adminEmails.includes((email || "").toLowerCase())) return ["Admin"];
+  if (!emp) return ["Employee"];
+  const explicit = parseRoles(emp.ELCRole);
+  if (explicit.length) return explicit;
+  // Legacy fallback heuristics (only used before ELCRole is set) → a single role.
+  const al = (emp.AccessLevel || "").toLowerCase();
+  if (al.includes("admin") || al.includes("owner")) return ["Admin"];
+  const title = (emp.JobTitle || "").toLowerCase();
+  if (title.includes("virtual assistant") || title === "va") return ["VA"];
+  if (title.includes("hr") || al.includes("hr")) return ["HR"];
+  if (title.includes("it") || al.includes("it")) return ["IT"];
+  if (title.includes("manager") || title.includes("regional") || title.includes("owner")) return ["Manager"];
+  return ["Employee"];
+}
+// Primary (single) role — kept for backward-compatible call sites and badges.
+function detectRole(emp, email) { return primaryRole(detectRoles(emp, email)); }
 
 // ============================================================
 // LOGIN SCREEN
@@ -803,7 +823,7 @@ function LoginScreen({ onLogin, err }) {
 // ============================================================
 // HEADER + TAB BAR
 // ============================================================
-function Header({ user, role, onLogout }) {
+function Header({ user, role, roles, onLogout }) {
   return (
     <div style={S.hdr}>
       <div style={S.hdrL}>
@@ -816,7 +836,7 @@ function Header({ user, role, onLogout }) {
       <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
         <div style={{ textAlign: "right" }}>
           <div style={S.hdrUser}>{user?.name || user?.email || "—"}</div>
-          <div style={S.hdrRole}>{role}</div>
+          <div style={S.hdrRole}>{roles && roles.length ? roles.join(" · ") : role}</div>
         </div>
         <button onClick={onLogout} style={{ ...S.btnO(C.t1, "rgba(255,255,255,.18)"), background: "transparent", color: C.t1 }}>Sign out</button>
       </div>
@@ -851,10 +871,10 @@ function journeyAnchorDate(j) { return j.JourneyType === "Offboarding" ? j.EndDa
 // JOURNEYS LIST (Onboarding / Offboarding)
 // ============================================================
 function JourneysTab({ type }) {
-  const { state, actions, role } = useData();
+  const { state, actions, role, hasRole } = useData();
   const [openId, setOpenId] = useState(null);
   const [startOpen, setStartOpen] = useState(false);
-  const canStart = role === "Admin" || role === "HR";
+  const canStart = hasRole("Admin", "HR");
 
   const list = state.journeys
     .filter(j => j.JourneyType === type)
@@ -956,14 +976,14 @@ function JourneyCard({ j, onClick }) {
 // JOURNEY DETAIL — task list w/ inline edit
 // ============================================================
 function JourneyDetailModal({ journeyId, onClose }) {
-  const { state, actions, role, currentEmail } = useData();
+  const { state, actions, role, hasRole, currentEmail } = useData();
   const j = state.journeys.find(x => String(x.id) === String(journeyId));
   if (!j) return null;
   const emp = state.employees.find(e => (e.Email || "").toLowerCase() === (j.EmployeeEmail || "").toLowerCase());
   const tasks = state.journeyTasks.filter(t => String(t.JourneyId) === String(j.id))
     .sort((a, b) => (a.OffsetDays || 0) - (b.OffsetDays || 0) || (a.DueDate || "").localeCompare(b.DueDate || "") || (a.OrderIdx || 0) - (b.OrderIdx || 0));
   const phases = uniq(tasks.map(t => t.Phase || "General"));
-  const canEdit = role === "Admin" || role === "HR" || (emp && (emp.ManagerEmail || "").toLowerCase() === (currentEmail || "").toLowerCase());
+  const canEdit = hasRole("Admin", "HR") || (emp && (emp.ManagerEmail || "").toLowerCase() === (currentEmail || "").toLowerCase());
 
   const [saving, setSaving] = useState(false);
   const setTask = async (task, patch) => {
@@ -979,9 +999,9 @@ function JourneyDetailModal({ journeyId, onClose }) {
   return (
     <Modal title={`${j.JourneyType} — ${j.EmployeeName || emp?.Title || j.EmployeeEmail}`} width={860} onClose={onClose} footer={
       <>
-        {role === "Admin" && j.Status !== "Cancelled" && <button style={S.btnO(C.er, C.er)} onClick={cancelJourney}>Cancel Journey</button>}
-        {(role === "Admin" || role === "HR") && j.Status === "Cancelled" && <button style={S.btnO(C.t5)} onClick={reopenJourney}>Reopen</button>}
-        {(role === "Admin" || role === "HR") && j.Status !== "Complete" && p.pct === 100 && <button style={S.btn(C.ok)} onClick={completeJourney}>Mark Complete</button>}
+        {hasRole("Admin") && j.Status !== "Cancelled" && <button style={S.btnO(C.er, C.er)} onClick={cancelJourney}>Cancel Journey</button>}
+        {hasRole("Admin", "HR") && j.Status === "Cancelled" && <button style={S.btnO(C.t5)} onClick={reopenJourney}>Reopen</button>}
+        {hasRole("Admin", "HR") && j.Status !== "Complete" && p.pct === 100 && <button style={S.btn(C.ok)} onClick={completeJourney}>Mark Complete</button>}
         <button style={S.btnO()} onClick={onClose}>Close</button>
       </>
     }>
@@ -1378,12 +1398,12 @@ function getMetaGroupsForType(journeyType) {
 }
 
 function TemplatesTab() {
-  const { state, actions, role } = useData();
+  const { state, actions, hasRole } = useData();
   const [seed, setSeed] = useState(false);
   const [editing, setEditing] = useState(null);
   const [filter, setFilter] = useState("Onboarding");
   const [groupFilter, setGroupFilter] = useState("__all__"); // __all__, __common__, or group name
-  const canEdit = role === "Admin" || role === "HR";
+  const canEdit = hasRole("Admin", "HR");
 
   const groups = getAvailableGroups(state, filter);
   const metaGroups = getMetaGroupsForType(filter);
@@ -1988,14 +2008,14 @@ function PayChangeEditModal({ payId, forEmail, onClose }) {
 // EMPLOYEE DETAIL MODAL — Profile, Permissions, Notes, Coaching, Files, Journeys
 // ============================================================
 function EmployeeDetailModal({ email, onClose }) {
-  const { state, actions, role, currentEmail } = useData();
+  const { state, actions, role, hasRole, currentEmail } = useData();
   const emp = state.employees.find(e => (e.Email || "").toLowerCase() === email);
   const [sub, setSub] = useState("profile");
   const [saving, setSaving] = useState(false);
   const [permDraft, setPermDraft] = useState({});
   const [permReason, setPermReason] = useState("");
   const [profileDraft, setProfileDraft] = useState(() => emp ? { Title: emp.Title || "", JobTitle: emp.JobTitle || "", Email: emp.Email || "", ManagerEmail: emp.ManagerEmail || "", Department: emp.Department || "", EmployeeActive: emp.EmployeeActive !== false } : { EmployeeActive: true });
-  const canEdit = role === "Admin" || role === "HR";
+  const canEdit = hasRole("Admin", "HR");
 
   const journeys = useMemo(() => emp ? state.journeys.filter(j => (j.EmployeeEmail || "").toLowerCase() === email).sort((a, b) => (b.Modified || "").localeCompare(a.Modified || "")) : [], [emp, state.journeys, email]);
   const notes    = useMemo(() => emp ? state.notes.filter(n => (n.EmployeeEmail || "").toLowerCase() === email).sort((a, b) => (b.NoteDate || "").localeCompare(a.NoteDate || "")) : [], [emp, state.notes, email]);
@@ -2355,8 +2375,8 @@ function EmployeesTab() {
             <tbody>
               {employees.map(e => {
                 const j = byEmail(e.Email);
-                const elcRole = e.ELCRole && e.ELCRole !== "None" ? e.ELCRole : null;
-                const roleBadgeType = elcRole === "Admin" ? "er" : elcRole === "HR" ? "pu" : elcRole === "IT" ? "inf" : elcRole === "Manager" ? "wn" : elcRole === "VA" ? "ok" : "neutral";
+                const elcRoles = parseRoles(e.ELCRole);
+                const roleBadgeType = r => r === "Admin" ? "er" : r === "HR" ? "pu" : r === "IT" ? "inf" : r === "Manager" ? "wn" : r === "VA" ? "ok" : "neutral";
                 return (
                   <tr key={e.id} style={{ cursor: "pointer" }} onClick={() => actions.openEmployee(e.Email)}
                       onMouseEnter={ev => ev.currentTarget.style.background = C.t0}
@@ -2364,7 +2384,7 @@ function EmployeesTab() {
                     <td style={S.td}><div style={{ display: "flex", alignItems: "center", gap: 8 }}><Avatar name={e.Title} size={28} /><div style={{ fontWeight: 600, color: C.t7 }}>{e.Title}</div></div></td>
                     <td style={S.td}>{e.JobTitle || "—"}</td>
                     <td style={S.td}>{e.ManagerEmail || "—"}</td>
-                    <td style={S.td}>{elcRole ? <Badge type={roleBadgeType}>{elcRole}</Badge> : <span style={{ color: C.b4 }}>—</span>}</td>
+                    <td style={S.td}>{elcRoles.length ? <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>{elcRoles.map(r => <Badge key={r} type={roleBadgeType(r)}>{r}</Badge>)}</div> : <span style={{ color: C.b4 }}>—</span>}</td>
                     <td style={S.td}><Badge type={permCount(e) > 0 ? "inf" : "neutral"}>{permCount(e)}</Badge></td>
                     <td style={S.td}><Badge type={noteCount(e) > 0 ? "wn" : "neutral"}>{noteCount(e)}</Badge></td>
                     <td style={S.td}>{e.EmployeeActive === false ? <Badge type="neutral">Inactive</Badge> : <Badge type="ok">Active</Badge>}</td>
@@ -2384,12 +2404,12 @@ function EmployeesTab() {
 // REVIEWS TAB — quarterly review dashboard (overdue / due-soon / upcoming)
 // ============================================================
 function ReviewsTab() {
-  const { state, actions, role, currentEmail } = useData();
-  const isManagerOrUp = role === "Admin" || role === "HR" || role === "Manager";
+  const { state, actions, role, hasRole, currentEmail } = useData();
+  const isManagerOrUp = hasRole("Admin", "HR", "Manager");
   // Scope: Admin/HR see everyone, Managers see their direct reports, others see themselves
   const visibleEmployees = useMemo(() => {
-    if (role === "Admin" || role === "HR") return state.employees.filter(e => e.EmployeeActive !== false);
-    if (role === "Manager") return state.employees.filter(e => e.EmployeeActive !== false && (e.ManagerEmail || "").toLowerCase() === currentEmail);
+    if (hasRole("Admin", "HR")) return state.employees.filter(e => e.EmployeeActive !== false);
+    if (hasRole("Manager")) return state.employees.filter(e => e.EmployeeActive !== false && (e.ManagerEmail || "").toLowerCase() === currentEmail);
     return state.employees.filter(e => (e.Email || "").toLowerCase() === currentEmail);
   }, [state.employees, role, currentEmail]);
 
@@ -2444,7 +2464,7 @@ function ReviewsTab() {
         {notStarted.length > 0 && <div style={S.kpi}><div style={S.kpiL}>Not Started Yet</div><div style={S.kpiV}>{notStarted.length}</div></div>}
       </div>
       <div style={{ fontSize: 12, color: C.b4, marginBottom: 10 }}>
-        {role === "Admin" || role === "HR" ? "Showing all active employees." : role === "Manager" ? "Showing your direct reports." : "Showing your own review status."}
+        {hasRole("Admin", "HR") ? "Showing all active employees." : hasRole("Manager") ? "Showing your direct reports." : "Showing your own review status."}
         {" "}Cadence: new hires reviewed at 30, 60, and 90 days from start, then every quarter. Employees who haven't started yet aren't flagged.
       </div>
       <Section title="Overdue" items={overdue} type="er" badge={r => r.daysSinceLast != null ? `${r.daysSinceLast}d since last` : `${Math.abs(r.daysUntilDue)}d overdue`} />
@@ -2517,16 +2537,19 @@ function ReportsTab() {
 // SETUP / DIAGNOSTICS — first-run helper
 // ============================================================
 function AccessOverviewCard() {
-  const { state, actions, role, currentEmail } = useData();
+  const { state, actions, hasRole } = useData();
   const [saving, setSaving] = useState({});
-  const canEdit = role === "Admin";
+  const canEdit = hasRole("Admin");
   const ELC_ROLES = ["Admin", "HR", "IT", "Manager", "Employee", "VA"];
+  const roleBadgeType = r => r === "Admin" ? "er" : r === "HR" ? "pu" : r === "IT" ? "inf" : r === "Manager" ? "wn" : r === "VA" ? "ok" : "neutral";
   const active = state.employees.filter(e => e.EmployeeActive !== false).sort((a, b) => (a.Title || "").localeCompare(b.Title || ""));
-  const byRole = ELC_ROLES.reduce((m, r) => { m[r] = active.filter(e => (e.ELCRole === r) || (!e.ELCRole && r === "Employee" && detectRole(e, e.Email) === "Employee") || (!e.ELCRole && detectRole(e, e.Email) === r)); return m; }, {});
+  // A person now shows under every role they hold (explicit list, or the legacy fallback).
+  const byRole = ELC_ROLES.reduce((m, r) => { m[r] = active.filter(e => detectRoles(e, e.Email).includes(r)); return m; }, {});
 
-  const changeRole = async (email, newRole) => {
+  // Write the selected role set as a delimited list (e.g. "Admin; HR"). Empty → "None" (fallback).
+  const setRoles = async (email, newRoles) => {
     setSaving(s => ({ ...s, [email]: true }));
-    try { await actions.setEmployeePermissions(email, { ELCRole: newRole || "" }, "Set via Setup → Access overview", null); }
+    try { await actions.setEmployeePermissions(email, { ELCRole: newRoles.join("; ") }, "Set via Setup → Access overview", null); }
     catch (e) { alert("Save failed: " + e.message); }
     finally { setSaving(s => ({ ...s, [email]: false })); }
   };
@@ -2535,36 +2558,50 @@ function AccessOverviewCard() {
     <div style={S.card}>
       <div style={S.cardT}>Access to this app</div>
       <div style={{ fontSize: 12, color: C.b4, marginBottom: 10 }}>
-        Controls what each employee can do <em>inside</em> the Employee Lifecycle app. <strong>Admin</strong> can do anything. <strong>HR</strong> can run journeys, set permissions, and write notes. <strong>IT</strong> can complete IT-assigned tasks. <strong>Manager</strong> can see their reports' onboarding/offboarding. <strong>Employee</strong> only sees their own tasks. The super-admin <code style={{ fontFamily: mono }}>{CONFIG.adminEmails.join(", ")}</code> is always Admin regardless of this column.
+        Controls what each employee can do <em>inside</em> the Employee Lifecycle app. One person can hold several roles — check all that apply. <strong>Admin</strong> can do anything. <strong>HR</strong> can run journeys, set permissions, and write notes. <strong>IT</strong> can complete IT-assigned tasks. <strong>Manager</strong> can see their reports' onboarding/offboarding. With no roles checked, the person only sees their own tasks (Employee). <strong>VA</strong> is tracking-only and gates the person out of the app. The super-admin <code style={{ fontFamily: mono }}>{CONFIG.adminEmails.join(", ")}</code> is always Admin regardless of this column.
       </div>
       <div style={{ display: "grid", gap: 6, marginBottom: 12 }}>
         {ELC_ROLES.map(r => (
           <div key={r} style={{ display: "grid", gridTemplateColumns: "100px 1fr", gap: 8, alignItems: "center", padding: "6px 0" }}>
-            <Badge type={r === "Admin" ? "er" : r === "HR" ? "pu" : r === "IT" ? "inf" : r === "Manager" ? "wn" : r === "VA" ? "ok" : "neutral"}>{r}</Badge>
+            <Badge type={roleBadgeType(r)}>{r}</Badge>
             <div style={{ fontSize: 12, color: C.b6 }}>{byRole[r].length === 0 ? <em style={{ color: C.b4 }}>nobody</em> : byRole[r].map(e => e.Title).join(", ")}</div>
           </div>
         ))}
       </div>
       {canEdit && (
         <div style={{ borderTop: `1px solid ${C.b1}`, paddingTop: 12 }}>
-          <div style={S.sec}>Set role</div>
+          <div style={S.sec}>Set roles</div>
           <div style={{ maxHeight: 360, overflowY: "auto", border: `1px solid ${C.b1}`, borderRadius: 4 }}>
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
-              <thead><tr><th style={S.th}>Employee</th><th style={S.th}>Current Title</th><th style={S.th}>Detected (fallback)</th><th style={S.th}>ELC Role</th></tr></thead>
+              <thead><tr><th style={S.th}>Employee</th><th style={S.th}>Detected (fallback)</th><th style={S.th}>Roles (check all that apply)</th></tr></thead>
               <tbody>
                 {active.map(e => {
-                  const cur = e.ELCRole || "";
+                  const cur = parseRoles(e.ELCRole);
+                  const hasVA = cur.includes("VA");
                   const detected = detectRole({ ...e, ELCRole: null }, e.Email);
+                  const busy = !!saving[e.Email];
+                  const toggle = r => {
+                    if (r === "VA") return setRoles(e.Email, hasVA ? [] : ["VA"]);
+                    const base = cur.filter(x => x !== "VA");
+                    setRoles(e.Email, base.includes(r) ? base.filter(x => x !== r) : [...base, r]);
+                  };
                   return (
                     <tr key={e.id}>
                       <td style={S.td}><div style={{ fontWeight: 600 }}>{e.Title}</div><div style={{ fontSize: 11, color: C.b4 }}>{e.Email}</div></td>
-                      <td style={S.td}>{e.JobTitle || "—"}</td>
                       <td style={S.td}><Badge type="neutral">{detected}</Badge></td>
                       <td style={S.td}>
-                        <select style={{ ...S.select, width: 140 }} value={cur} disabled={!!saving[e.Email]} onChange={ev => changeRole(e.Email, ev.target.value)}>
-                          <option value="">— Use fallback —</option>
-                          {ELC_ROLES.map(r => <option key={r} value={r}>{r}</option>)}
-                        </select>
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
+                          {COMBINABLE_ROLES.map(r => (
+                            <label key={r} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: hasVA ? C.b3 : C.b6, cursor: hasVA || busy ? "default" : "pointer" }}>
+                              <input type="checkbox" checked={cur.includes(r)} disabled={hasVA || busy} onChange={() => toggle(r)} />{r}
+                            </label>
+                          ))}
+                          <span style={{ width: 1, alignSelf: "stretch", background: C.b1 }} />
+                          <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: C.b6, cursor: busy ? "default" : "pointer" }}>
+                            <input type="checkbox" checked={hasVA} disabled={busy} onChange={() => toggle("VA")} />VA
+                          </label>
+                          {busy && <span style={{ fontSize: 11, color: C.b4 }}>saving…</span>}
+                        </div>
                       </td>
                     </tr>
                   );
@@ -2689,7 +2726,9 @@ function App() {
 
   const currentEmail = (acct?.username || "").toLowerCase();
   const me = state.employees.find(e => (e.Email || "").toLowerCase() === currentEmail);
-  const role = detectRole(me, currentEmail);
+  const roles = detectRoles(me, currentEmail);
+  const role = primaryRole(roles);                       // highest role (badges, VA gate)
+  const hasRole = (...names) => names.some(n => roles.includes(n)); // any-of capability check
 
   const reload = useCallback(async () => {
     if (!token) return;
@@ -2835,13 +2874,13 @@ function App() {
     }),
   }), [withToken, reload, state.employees, state.apps, currentEmail]);
 
-  const ctxValue = { state, actions, role, currentEmail, me };
+  const ctxValue = { state, actions, role, roles, hasRole, currentEmail, me };
 
   // Reviews tab count — must be called every render to satisfy rules-of-hooks,
   // so it lives ABOVE the early returns below.
   const reviewCount = useMemo(() => {
-    const scope = role === "Admin" || role === "HR" ? state.employees.filter(e => e.EmployeeActive !== false)
-      : role === "Manager" ? state.employees.filter(e => e.EmployeeActive !== false && (e.ManagerEmail || "").toLowerCase() === currentEmail)
+    const scope = hasRole("Admin", "HR") ? state.employees.filter(e => e.EmployeeActive !== false)
+      : hasRole("Manager") ? state.employees.filter(e => e.EmployeeActive !== false && (e.ManagerEmail || "").toLowerCase() === currentEmail)
       : state.employees.filter(e => (e.Email || "").toLowerCase() === currentEmail);
     return scope.reduce((n, e) => {
       const s = reviewStatusFor(e, state.reviews);
@@ -2872,8 +2911,8 @@ function App() {
   const offCount = state.journeys.filter(j => j.JourneyType === "Offboarding" && j.Status !== "Complete" && j.Status !== "Cancelled").length;
   const myCount = state.journeyTasks.filter(t => (t.AssigneeEmail || "").toLowerCase() === currentEmail && t.Status !== "Done").length;
 
-  const isAdmin = role === "Admin" || role === "HR";
-  const isManagerOrUp = isAdmin || role === "Manager";
+  const isAdmin = hasRole("Admin", "HR");
+  const isManagerOrUp = isAdmin || hasRole("Manager");
   const tabs = [
     { key: "onboarding", label: "Onboarding", count: obCount },
     { key: "offboarding", label: "Offboarding", count: offCount },
@@ -2888,7 +2927,7 @@ function App() {
   return (
     <DataCtx.Provider value={ctxValue}>
       <div style={S.page}>
-        <Header user={{ name: me?.Title, email: currentEmail }} role={role} onLogout={logout} />
+        <Header user={{ name: me?.Title, email: currentEmail }} role={role} roles={roles} onLogout={logout} />
         <TabBar tabs={tabs} active={tab} onChange={setTab} />
         <div style={S.content}>
           {loadErr && <div style={{ background: C.erb, color: C.er, padding: 10, borderRadius: 4, fontSize: 12, marginBottom: 14 }}>{loadErr} <button onClick={reload} style={{ ...S.btnO(C.er, C.er), ...S.xs, marginLeft: 8 }}>Retry</button></div>}

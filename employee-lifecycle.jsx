@@ -887,11 +887,9 @@ function JourneysTab({ type }) {
   const list = state.journeys
     .filter(j => j.JourneyType === type)
     .map(j => ({ ...j, _emp: state.employees.find(e => (e.Email || "").toLowerCase() === (j.EmployeeEmail || "").toLowerCase()), _p: journeyProgress(j, state.journeyTasks) }))
-    .sort((a, b) => {
-      const aA = journeyAnchorDate(a) || "";
-      const bA = journeyAnchorDate(b) || "";
-      return type === "Offboarding" ? aA.localeCompare(bA) : bA.localeCompare(aA);
-    });
+    // Oldest → newest by anchor date (StartDate for onboarding, EndDate for offboarding).
+    // Journeys with no date sort to the end.
+    .sort((a, b) => (journeyAnchorDate(a) || "9999-12-31").localeCompare(journeyAnchorDate(b) || "9999-12-31"));
 
   const active = list.filter(j => j.Status !== "Complete" && j.Status !== "Cancelled");
   const completed = list.filter(j => j.Status === "Complete" || j.Status === "Cancelled");

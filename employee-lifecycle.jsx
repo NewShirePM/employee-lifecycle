@@ -140,10 +140,28 @@ function templateAppliesToGroup(tpl, selectedGroup, opts) {
 // ============================================================
 // HELPERS
 // ============================================================
-function todayIso() { return new Date().toISOString().slice(0, 10); }
-function addDays(iso, n) { const d = new Date(iso + "T00:00:00"); d.setDate(d.getDate() + (Number(n) || 0)); return d.toISOString().slice(0, 10); }
-function fmtDate(iso) { if (!iso) return "—"; return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }); }
-function daysFromNow(iso) { if (!iso) return null; return Math.floor((new Date(iso).getTime() - Date.now()) / 86400000); }
+// These are calendar dates (start day, due day) — NOT instants. Parse them as LOCAL
+// dates so they never shift across the UTC boundary (e.g. "2026-05-27" must display as
+// May 27 in EST, not May 26). localDate() reads the leading YYYY-MM-DD from a date-only
+// string OR a full ISO timestamp and builds a local-midnight Date.
+function localDate(value) {
+  if (!value) return null;
+  const m = String(value).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (m) return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  const d = new Date(value);
+  return isNaN(d.getTime()) ? null : d;
+}
+function ymd(d) { const p = n => String(n).padStart(2, "0"); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`; }
+function todayIso() { return ymd(new Date()); }
+function addDays(iso, n) { const d = localDate(iso) || new Date(); d.setDate(d.getDate() + (Number(n) || 0)); return ymd(d); }
+function fmtDate(iso) { const d = localDate(iso); return d ? d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "—"; }
+function daysFromNow(iso) {
+  const d = localDate(iso); if (!d) return null;
+  const t = new Date();
+  const target = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const today = new Date(t.getFullYear(), t.getMonth(), t.getDate());
+  return Math.round((target - today) / 86400000);
+}
 function initials(name) { if (!name) return "?"; const p = name.trim().split(/\s+/); return p.length > 1 ? (p[0][0] + p[p.length - 1][0]).toUpperCase() : name.slice(0, 2).toUpperCase(); }
 function classifyDue(due, status) { if (status === "Done") return "done"; if (!due) return "none"; const d = daysFromNow(due); if (d == null) return "none"; if (d < 0) return "overdue"; if (d <= 3) return "soon"; return "ok"; }
 function uniq(arr) { return Array.from(new Set(arr.filter(Boolean))); }
@@ -1808,11 +1826,7 @@ function currentQuarterLabel(date = new Date()) {
 }
 const REVIEW_NEW_HIRE_MILESTONES = [30, 60, 90]; // days after StartDate for a new hire's first three reviews
 const REVIEW_QUARTER_DAYS = 91;                  // cadence once the 90-day review is done
-function reviewDateOnly(s) {
-  if (!s) return "";
-  const d = new Date(s);
-  return isNaN(d.getTime()) ? String(s).slice(0, 10) : d.toISOString().slice(0, 10);
-}
+function reviewDateOnly(s) { const d = localDate(s); return d ? ymd(d) : ""; }
 function conductedReviews(employeeEmail, reviews) {
   return reviews
     .filter(r => (r.EmployeeEmail || "").toLowerCase() === (employeeEmail || "").toLowerCase() && r.ConductedDate && r.Status !== "Cancelled")

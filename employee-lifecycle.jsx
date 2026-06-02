@@ -996,6 +996,27 @@ function JourneyDetailModal({ journeyId, onClose }) {
     setSaving(true); try { await actions.updateTask(task.id, patch); } catch (e) { alert("Save failed: " + e.message); } finally { setSaving(false); }
   };
 
+  // ── Edit the anchor date (Start Date / Last Day) if circumstances change ──
+  const anchorField = j.JourneyType === "Offboarding" ? "EndDate" : "StartDate";
+  const anchorLabel = j.JourneyType === "Offboarding" ? "Last Day" : "Start Date";
+  const [editDate, setEditDate] = useState(false);
+  const [dateDraft, setDateDraft] = useState("");
+  const beginEditDate = () => { setDateDraft(reviewDateOnly(journeyAnchorDate(j))); setEditDate(true); };
+  const saveDate = async () => {
+    if (!dateDraft) return alert(`${anchorLabel} is required.`);
+    setSaving(true);
+    try {
+      // Tasks are generated as OffsetDays from the anchor — offer to re-align open ones.
+      const shiftable = tasks.filter(t => t.Status !== "Done" && t.OffsetDays != null && t.OffsetDays !== "");
+      const shift = shiftable.length > 0 && confirm(`Move the ${shiftable.length} open task due date(s) to match the new ${anchorLabel.toLowerCase()}? (Completed tasks are left as-is.)`);
+      if (shift) for (const t of shiftable) await actions.updateTask(t.id, { DueDate: addDays(dateDraft, Number(t.OffsetDays) || 0) });
+      await actions.updateJourney(j.id, { [anchorField]: dateDraft });
+      // Onboarding start date also lives on the employee record (drives review cadence) — keep them in sync.
+      if (anchorField === "StartDate" && emp) await actions.upsertEmployee({ Email: j.EmployeeEmail, StartDate: dateDraft });
+      setEditDate(false);
+    } catch (e) { alert("Save failed: " + e.message); } finally { setSaving(false); }
+  };
+
   const cancelJourney = async () => { if (!confirm(`Cancel this ${j.JourneyType.toLowerCase()} journey?`)) return; await actions.updateJourney(j.id, { Status: "Cancelled" }); onClose(); };
   const reopenJourney = async () => { await actions.updateJourney(j.id, { Status: "In Progress" }); };
   const completeJourney = async () => { await actions.updateJourney(j.id, { Status: "Complete" }); };
@@ -1013,7 +1034,20 @@ function JourneyDetailModal({ journeyId, onClose }) {
     }>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 14 }}>
         <div><div style={S.sec}>Status</div><Badge type={j.Status === "Complete" ? "ok" : j.Status === "Cancelled" ? "neutral" : "inf"}>{j.Status}</Badge></div>
-        <div><div style={S.sec}>{j.JourneyType === "Offboarding" ? "Last Day" : "Start Date"}</div><div style={{ fontWeight: 600, color: C.t7 }}>{fmtDate(journeyAnchorDate(j))}</div></div>
+        <div><div style={S.sec}>{anchorLabel}</div>
+          {editDate ? (
+            <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+              <input type="date" style={{ ...S.input, width: 150 }} value={dateDraft} disabled={saving} onChange={e => setDateDraft(e.target.value)} />
+              <button style={{ ...S.btn(C.hdr), ...S.xs }} disabled={saving} onClick={saveDate}>{saving ? "Saving…" : "Save"}</button>
+              <button style={{ ...S.btnO(), ...S.xs }} disabled={saving} onClick={() => setEditDate(false)}>Cancel</button>
+            </div>
+          ) : (
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <span style={{ fontWeight: 600, color: C.t7 }}>{fmtDate(journeyAnchorDate(j))}</span>
+              {canEdit && j.Status !== "Cancelled" && <button style={{ ...S.btnO(C.t5), ...S.xs }} onClick={beginEditDate}>Edit</button>}
+            </div>
+          )}
+        </div>
         <div><div style={S.sec}>Progress</div><div style={{ fontWeight: 600 }}>{p.done}/{p.total} ({p.pct}%)</div><ProgressBar value={p.pct} /></div>
       </div>
       <div style={{ background: C.t0, border: `1px solid ${C.t1}`, borderRadius: 6, padding: 10, marginBottom: 14, fontSize: 12 }}>

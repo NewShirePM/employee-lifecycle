@@ -1823,8 +1823,11 @@ function TemplateEditModal({ tpl, onClose }) {
 function MyTasksTab() {
   const { state, currentEmail, hasRole } = useData();
   const myEmail = (currentEmail || "").toLowerCase();
+  // Drop tasks whose parent journey is Cancelled or Complete — those tasks
+  // are no longer actionable even if individually still "Pending".
   const mine = state.journeyTasks.filter(t => t.Status !== "Done" && taskIsMine(t, myEmail, hasRole))
     .map(t => ({ ...t, _j: state.journeys.find(j => String(j.id) === String(t.JourneyId)) }))
+    .filter(t => t._j && t._j.Status !== "Cancelled" && t._j.Status !== "Complete")
     .sort((a, b) => (a.DueDate || "9999").localeCompare(b.DueDate || "9999"));
   const overdue = mine.filter(t => classifyDue(t.DueDate, t.Status) === "overdue");
   const soon = mine.filter(t => classifyDue(t.DueDate, t.Status) === "soon");
@@ -3111,7 +3114,12 @@ function App() {
   // a regular Employee shouldn't see "3 offboardings" if they can't see any.
   const obCount = state.journeys.filter(j => j.JourneyType === "Onboarding" && j.Status !== "Complete" && j.Status !== "Cancelled" && canSeeJourney(j, hasRole, currentEmail, state.employees)).length;
   const offCount = state.journeys.filter(j => j.JourneyType === "Offboarding" && j.Status !== "Complete" && j.Status !== "Cancelled" && canSeeJourney(j, hasRole, currentEmail, state.employees)).length;
-  const myCount = state.journeyTasks.filter(t => t.Status !== "Done" && taskIsMine(t, currentEmail, hasRole)).length;
+  const myCount = state.journeyTasks.filter(t => {
+    if (t.Status === "Done") return false;
+    if (!taskIsMine(t, currentEmail, hasRole)) return false;
+    const j = state.journeys.find(jj => String(jj.id) === String(t.JourneyId));
+    return j && j.Status !== "Cancelled" && j.Status !== "Complete";
+  }).length;
 
   const isAdmin = hasRole("Admin", "HR");
   const isManagerOrUp = isAdmin || hasRole("Manager");

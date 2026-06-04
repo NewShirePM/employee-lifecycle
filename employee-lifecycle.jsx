@@ -211,10 +211,22 @@ async function gAll(token, url) {
 // the system-owned fields (id, Created, Modified, etc.) with "Field 'id' is not
 // recognized". Keeps false (Yes/No) and 0 (Number) intentionally.
 const SYSTEM_FIELDS = new Set([
+  // Item identity / audit
   "id", "Created", "Modified", "_UIVersionString",
   "ContentType", "ContentTypeId", "Attachments", "Order",
   "AuthorLookupId", "EditorLookupId", "Author", "Editor",
   "LinkTitle", "LinkTitleNoMenu", "AppAuthor", "AppEditor",
+  // Counts and folder/file metadata that come back from Graph but are
+  // never user-writable on a list item.
+  "ItemChildCount", "FolderChildCount",
+  "FileSystemObjectType", "FSObjType",
+  "FileRef", "FileDirRef", "FileLeafRef", "ParentLeafRef",
+  "Path", "UniqueId", "DocIcon",
+  "ServerRedirectedEmbedUri", "ServerRedirectedEmbedUrl",
+  "ProgId", "ScopeId", "HTML_x0020_File_x0020_Type",
+  // Default view internal columns
+  "_ComplianceFlags", "_ComplianceTag", "_ComplianceTagWrittenTime",
+  "_ComplianceTagUserId", "_IsRecord",
 ]);
 function cleanFields(fields) {
   const out = {};

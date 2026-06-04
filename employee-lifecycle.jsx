@@ -31,6 +31,9 @@ const CONFIG = {
   // org-wide due date that's used in place of an "X days since last" overdue count.
   // After June 30, 2026 passes with no review, the normal overdue flagging kicks in.
   firstReviewDueDate: "2026-06-30",
+  // Employees who don't need a quarterly review tracked here — typically the
+  // highest-ranking people whose performance is handled directly by ownership.
+  reviewExemptEmails: ["jwhite@vanrockre.com"],
   adminEmails: ["bturner@newshirepm.com"],
   filesLibraryUrl: "https://vanrockre.sharepoint.com/ELC_EmployeeFiles",
   // Predefined groups shown in dropdowns. Users can also create custom groups by typing.
@@ -2042,6 +2045,11 @@ function reviewStatusFor(employee, reviews, journeys = []) {
   const n = done.length;
   const daysSinceLast = last ? Math.floor((Date.now() - new Date(last.ConductedDate).getTime()) / 86400000) : null;
 
+  // Exempt from in-app review tracking (e.g. ownership-level roles).
+  if ((CONFIG.reviewExemptEmails || []).map(e => e.toLowerCase()).includes(email)) {
+    return { state: "exempt", lastReview: last, daysSinceLast, nextDueDate: null, daysUntilDue: null };
+  }
+
   // Actively onboarding — reviews tracked inside their onboarding journey, not here.
   const inOnboarding = (journeys || []).some(j =>
     (j.EmployeeEmail || "").toLowerCase() === email
@@ -2410,6 +2418,7 @@ function EmployeeDetailModal({ email, onClose }) {
                 {reviewStatus.state === "due-soon" && <Badge type="wn">Due {fmtDate(reviewStatus.nextDueDate)}{reviewStatus.lastReview ? "" : " (first review)"}</Badge>}
                 {reviewStatus.state === "ok" && <Badge type="ok">{reviewStatus.lastReview ? `Last: ${fmtDate(reviewStatus.lastReview.ConductedDate)} · next ` : "First review "}due {fmtDate(reviewStatus.nextDueDate)}</Badge>}
                 {reviewStatus.state === "onboarding" && <Badge type="inf">In onboarding — review tracked by Day-90 task</Badge>}
+                {reviewStatus.state === "exempt" && <Badge type="neutral">Exempt — reviewed directly by ownership</Badge>}
                 {reviewStatus.state === "never" && <Badge type="neutral">No reviews — add a start date to schedule</Badge>}
                 {reviewStatus.state === "not-started" && <Badge type="neutral">Starts {fmtDate(emp.StartDate)} · first review due {fmtDate(reviewStatus.nextDueDate)}</Badge>}
               </div>
@@ -2690,6 +2699,7 @@ function ReviewsTab() {
   const never      = rows.filter(r => r.state === "never");
   const notStarted = rows.filter(r => r.state === "not-started");
   const onboarding = rows.filter(r => r.state === "onboarding");
+  const exempt     = rows.filter(r => r.state === "exempt");
 
   const Card = ({ r, badgeType, badge }) => (
     <div onClick={() => actions.openEmployee(r.emp.Email)} style={{ cursor: "pointer", background: C.wh, border: `1px solid ${C.b1}`, borderRadius: 6, padding: 12, boxShadow: "0 1px 2px rgba(28,55,64,.04)" }}
@@ -2741,6 +2751,7 @@ function ReviewsTab() {
       <Section title="In Onboarding (review handled by Day-90 task)" items={onboarding} type="inf" badge={() => "in onboarding"} />
       <Section title="Missing Start Date" items={never} type="wn" badge={() => "no start date"} />
       <Section title="Not Started Yet" items={notStarted} type="neutral" badge={r => `starts ${fmtDate(r.emp.StartDate)}`} />
+      <Section title="Exempt — reviewed by ownership" items={exempt} type="neutral" badge={() => "exempt"} />
     </div>
   );
 }

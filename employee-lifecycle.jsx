@@ -707,7 +707,7 @@ const DEFAULT_APPS = [
   { Title: "AppFolio Dashboard",  AppKey: "appfolio",   ColumnName: "AppFolioRole",    Roles: ["Viewer","Editor","Admin"],                IconLetter: "A", Color: "#B8922E", Active: true, OrderIdx: 60, OnboardingDefault: "None",     Description: "NewShire AppFolio analytics dashboard" },
   { Title: "ShowMojo Sync",       AppKey: "showmojo",   ColumnName: "ShowMojoRole",    Roles: ["Viewer","Editor","Admin"],                IconLetter: "S", Color: "#5B3FA8", Active: true, OrderIdx: 70, OnboardingDefault: "None",     Description: "ShowMojo listing/showings sync" },
   { Title: "Renewal Manager",     AppKey: "renewal",    ColumnName: "RenewalRole",     Roles: ["Viewer","Editor","Admin"],                IconLetter: "R", Color: "#C44B3B", Active: true, OrderIdx: 80, OnboardingDefault: "None",     Description: "Lease renewal workflow & tracking" },
-  { Title: "Employee Lifecycle",  AppKey: "elc",        ColumnName: "ELCRole",         Roles: ["Employee","Manager","HR","IT","Admin","VA"],   IconLetter: "L", Color: "#CDA04B", Active: true, OrderIdx: 90, OnboardingDefault: "Employee", Description: "Onboarding / offboarding / HR file system" },
+  { Title: "Employee Lifecycle",  AppKey: "elc",        ColumnName: "ELCRole",         Roles: ["Employee","Manager","HR","IT","Admin"],   IconLetter: "L", Color: "#CDA04B", Active: true, OrderIdx: 90, OnboardingDefault: "Employee", Description: "Onboarding / offboarding / HR file system" },
 ];
 function normalizeApp(raw) {
   let roles = raw.Roles;
@@ -792,10 +792,11 @@ function Empty({ title, sub }) { return <div style={{ textAlign: "center", paddi
 //   2. ELCRole column on Employees (set via App Permissions UI) ← canonical
 //   3. Legacy AccessLevel / JobTitle heuristics (for first-run before ELCRole is set)
 //
-// Note: "VA" is a tracking-only role. The lifecycle app gates VAs out
-// (see "VA" handling in App) — they exist in the data so HR/managers can
-// track 1099 contractor records, but VAs have no access to this app.
-const VALID_ELC_ROLES = new Set(["Admin", "HR", "IT", "Manager", "Employee", "VA"]);
+// VAs (1099 contractors) are identified by Employees.PersonaType = "Virtual Assistant",
+// not by a separate ELCRole. In this app they're treated the same as a regular Employee:
+// they only see their own My Tasks and their own onboarding/offboarding journey.
+// VA-specific behavior (template-group selection, 1099 paperwork) is driven by PersonaType.
+const VALID_ELC_ROLES = new Set(["Admin", "HR", "IT", "Manager", "Employee"]);
 // Roles that can be freely combined on one person (small-company reality — one person
 // may wear several hats). Employee is the baseline; VA is tracking-only and exclusive.
 const COMBINABLE_ROLES = ["Admin", "HR", "IT", "Manager"];
@@ -821,7 +822,6 @@ function detectRoles(emp, email) {
   const al = (emp.AccessLevel || "").toLowerCase();
   if (al.includes("admin") || al.includes("owner")) return ["Admin"];
   const title = (emp.JobTitle || "").toLowerCase();
-  if (title.includes("virtual assistant") || title === "va") return ["VA"];
   if (title.includes("hr") || al.includes("hr")) return ["HR"];
   if (title.includes("it") || al.includes("it")) return ["IT"];
   if (title.includes("manager") || title.includes("regional") || title.includes("owner")) return ["Manager"];
@@ -2597,7 +2597,7 @@ function EmployeesTab() {
               {employees.map(e => {
                 const j = byEmail(e.Email);
                 const elcRoles = parseRoles(e.ELCRole);
-                const roleBadgeType = r => r === "Admin" ? "er" : r === "HR" ? "pu" : r === "IT" ? "inf" : r === "Manager" ? "wn" : r === "VA" ? "ok" : "neutral";
+                const roleBadgeType = r => r === "Admin" ? "er" : r === "HR" ? "pu" : r === "IT" ? "inf" : r === "Manager" ? "wn" : "neutral";
                 return (
                   <tr key={e.id} style={{ cursor: "pointer" }} onClick={() => actions.openEmployee(e.Email)}
                       onMouseEnter={ev => ev.currentTarget.style.background = C.t0}
@@ -2761,8 +2761,8 @@ function AccessOverviewCard() {
   const { state, actions, hasRole } = useData();
   const [saving, setSaving] = useState({});
   const canEdit = hasRole("Admin");
-  const ELC_ROLES = ["Admin", "HR", "IT", "Manager", "Employee", "VA"];
-  const roleBadgeType = r => r === "Admin" ? "er" : r === "HR" ? "pu" : r === "IT" ? "inf" : r === "Manager" ? "wn" : r === "VA" ? "ok" : "neutral";
+  const ELC_ROLES = ["Admin", "HR", "IT", "Manager", "Employee"];
+  const roleBadgeType = r => r === "Admin" ? "er" : r === "HR" ? "pu" : r === "IT" ? "inf" : r === "Manager" ? "wn" : "neutral";
   const active = state.employees.filter(e => e.EmployeeActive !== false).sort((a, b) => (a.Title || "").localeCompare(b.Title || ""));
   // A person now shows under every role they hold (explicit list, or the legacy fallback).
   const byRole = ELC_ROLES.reduce((m, r) => { m[r] = active.filter(e => detectRoles(e, e.Email).includes(r)); return m; }, {});
@@ -2798,13 +2798,10 @@ function AccessOverviewCard() {
               <tbody>
                 {active.map(e => {
                   const cur = parseRoles(e.ELCRole);
-                  const hasVA = cur.includes("VA");
                   const detected = detectRole({ ...e, ELCRole: null }, e.Email);
                   const busy = !!saving[e.Email];
                   const toggle = r => {
-                    if (r === "VA") return setRoles(e.Email, hasVA ? [] : ["VA"]);
-                    const base = cur.filter(x => x !== "VA");
-                    setRoles(e.Email, base.includes(r) ? base.filter(x => x !== r) : [...base, r]);
+                    setRoles(e.Email, cur.includes(r) ? cur.filter(x => x !== r) : [...cur, r]);
                   };
                   return (
                     <tr key={e.id}>
@@ -2813,14 +2810,10 @@ function AccessOverviewCard() {
                       <td style={S.td}>
                         <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
                           {COMBINABLE_ROLES.map(r => (
-                            <label key={r} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: hasVA ? C.b3 : C.b6, cursor: hasVA || busy ? "default" : "pointer" }}>
-                              <input type="checkbox" checked={cur.includes(r)} disabled={hasVA || busy} onChange={() => toggle(r)} />{r}
+                            <label key={r} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: C.b6, cursor: busy ? "default" : "pointer" }}>
+                              <input type="checkbox" checked={cur.includes(r)} disabled={busy} onChange={() => toggle(r)} />{r}
                             </label>
                           ))}
-                          <span style={{ width: 1, alignSelf: "stretch", background: C.b1 }} />
-                          <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: C.b6, cursor: busy ? "default" : "pointer" }}>
-                            <input type="checkbox" checked={hasVA} disabled={busy} onChange={() => toggle("VA")} />VA
-                          </label>
                           {busy && <span style={{ fontSize: 11, color: C.b4 }}>saving…</span>}
                         </div>
                       </td>
@@ -3113,22 +3106,6 @@ function App() {
 
   if (!ready) return <div style={{ ...S.page, display: "flex", alignItems: "center", justifyContent: "center" }}><div style={{ animation: "pulse 1.4s ease-in-out infinite", color: C.b4 }}>Loading…</div></div>;
   if (!acct) return <LoginScreen onLogin={login} err={authErr} />;
-  // VA role is tracking-only — no access to this app. Show a polite gate.
-  if (role === "VA") return (
-    <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: `linear-gradient(135deg, ${C.hdr} 0%, ${C.t6} 100%)`, padding: 20 }}>
-      <div style={{ background: C.wh, borderRadius: 12, padding: 36, maxWidth: 460, width: "100%", boxShadow: "0 20px 60px rgba(0,0,0,.25)", textAlign: "center" }}>
-        <div style={{ width: 56, height: 56, background: C.g5, borderRadius: 12, margin: "0 auto 14px", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 28, color: C.t7, fontFamily: "Georgia,serif", fontWeight: 700 }}>L</div>
-        <div style={{ fontSize: 16, fontWeight: 700, color: C.t7, marginBottom: 6 }}>Employee Lifecycle</div>
-        <div style={{ fontSize: 13, color: C.b6, marginBottom: 18 }}>This app is for the NewShire internal HR team.</div>
-        <div style={{ fontSize: 12, color: C.b4, lineHeight: 1.6, marginBottom: 18 }}>
-          You're signed in as <strong>{currentEmail}</strong>. Your record is on file here for HR tracking, but you don't have actions to take in this app.
-          <br /><br />
-          For your task tracking, use the <strong>VA Tracker</strong>. For training, use <strong>NewShire University</strong>.
-        </div>
-        <button onClick={logout} style={S.btn(C.hdr)}>Sign out</button>
-      </div>
-    </div>
-  );
 
   // Header counts respect the same visibility rule as the tabs themselves —
   // a regular Employee shouldn't see "3 offboardings" if they can't see any.

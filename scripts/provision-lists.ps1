@@ -351,7 +351,7 @@ if (-not $SkipSeed) {
         @{ Title='AppFolio Dashboard';  AppKey='appfolio';    ColumnName='AppFolioRole';     IconLetter='A'; Color='#B8922E'; Roles='["Viewer","Editor","Admin"]';               OrderIdx=60; Description='NewShire AppFolio analytics dashboard';            OnboardingDefault='None' }
         @{ Title='ShowMojo Sync';       AppKey='showmojo';    ColumnName='ShowMojoRole';     IconLetter='S'; Color='#5B3FA8'; Roles='["Viewer","Editor","Admin"]';               OrderIdx=70; Description='ShowMojo listing/showings sync';                   OnboardingDefault='None' }
         @{ Title='Renewal Manager';     AppKey='renewal';     ColumnName='RenewalRole';      IconLetter='R'; Color='#C44B3B'; Roles='["Viewer","Editor","Admin"]';               OrderIdx=80; Description='Lease renewal workflow & tracking';                OnboardingDefault='None' }
-        @{ Title='Employee Lifecycle';  AppKey='elc';         ColumnName='ELCRole';          IconLetter='L'; Color='#CDA04B'; Roles='["Employee","Manager","HR","IT","Admin","VA"]';  OrderIdx=90; Description='Onboarding / offboarding / HR file system';        OnboardingDefault='Lowest' }
+        @{ Title='Employee Lifecycle';  AppKey='elc';         ColumnName='ELCRole';          IconLetter='L'; Color='#CDA04B'; Roles='["Employee","Manager","HR","IT","Admin"]';  OrderIdx=90; Description='Onboarding / offboarding / HR file system';        OnboardingDefault='Lowest' }
     )
 
     foreach ($a in $appsSeed) {

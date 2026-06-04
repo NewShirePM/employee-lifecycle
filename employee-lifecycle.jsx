@@ -903,17 +903,43 @@ function journeyProgress(journey, journeyTasks) {
 }
 function journeyAnchorDate(j) { return j.JourneyType === "Offboarding" ? j.EndDate : j.StartDate; }
 
+// Manager-line check: returns true if `managerEmail` is any tier (1, 2, or 3) up the
+// chain of command for this employee — i.e., manager, grandmanager, or great-grandmanager.
+function isInManagerLine(emp, managerEmail) {
+  if (!emp || !managerEmail) return false;
+  const me = (managerEmail || "").toLowerCase();
+  return [emp.ManagerEmail, emp.Level2ManagerEmail, emp.Level3ManagerEmail]
+    .some(m => (m || "").toLowerCase() === me);
+}
+
+// Visibility rule for a single journey card. Same rule used everywhere the
+// Onboarding/Offboarding lists are rendered or counted.
+//   Admin / HR             — see all (incl. unshared offboarding)
+//   Manager                — see anyone in their line of succession (1/2/3 tiers up);
+//                            for offboarding, ALSO requires SharedWithEmployee
+//   Everyone else          — see only their own; offboarding additionally requires
+//                            SharedWithEmployee
+function canSeeJourney(journey, hasRole, currentEmail, employees) {
+  if (hasRole("Admin", "HR")) return true;
+  const isOff = journey.JourneyType === "Offboarding";
+  if (isOff && !journey.SharedWithEmployee) return false;
+  const empRow = employees.find(e => (e.Email || "").toLowerCase() === (journey.EmployeeEmail || "").toLowerCase());
+  if (hasRole("Manager") && isInManagerLine(empRow, currentEmail)) return true;
+  return (journey.EmployeeEmail || "").toLowerCase() === (currentEmail || "").toLowerCase();
+}
+
 // ============================================================
 // JOURNEYS LIST (Onboarding / Offboarding)
 // ============================================================
 function JourneysTab({ type }) {
-  const { state, actions, role, hasRole } = useData();
+  const { state, actions, role, hasRole, currentEmail } = useData();
   const [openId, setOpenId] = useState(null);
   const [startOpen, setStartOpen] = useState(false);
   const canStart = hasRole("Admin", "HR");
 
   const list = state.journeys
     .filter(j => j.JourneyType === type)
+    .filter(j => canSeeJourney(j, hasRole, currentEmail, state.employees))
     .map(j => ({ ...j, _emp: state.employees.find(e => (e.Email || "").toLowerCase() === (j.EmployeeEmail || "").toLowerCase()), _p: journeyProgress(j, state.journeyTasks) }))
     // Oldest → newest by anchor date (StartDate for onboarding, EndDate for offboarding).
     // Journeys with no date sort to the end.
@@ -1089,6 +1115,43 @@ function JourneyDetailModal({ journeyId, onClose }) {
         </div>
       </div>
 
+      {/* Offboarding visibility gate — confidential to HR/Admin until shared with employee + their manager line */}
+      {j.JourneyType === "Offboarding" && (
+        <div style={{ marginBottom: 14, padding: 10, background: j.SharedWithEmployee ? C.okb : C.wnb, border: `1px solid ${j.SharedWithEmployee ? C.ok + "33" : C.wn + "33"}`, borderRadius: 6, fontSize: 12, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+          <div>
+            {j.SharedWithEmployee ? (
+              <><strong style={{ color: C.ok }}>👁 Shared</strong> — the employee and their manager line can see this journey.</>
+            ) : (
+              <><strong style={{ color: C.wn }}>🔒 Confidential</strong> — only Admin / HR can see this journey. The employee will <em>not</em> be informed via this app until you share it.</>
+            )}
+          </div>
+          {hasRole("Admin", "HR") && j.Status !== "Cancelled" && (
+            <button
+              style={j.SharedWithEmployee ? S.btnO(C.wn, C.wn) : S.btn(C.ok)}
+              disabled={saving}
+              onClick={async () => {
+                const next = !j.SharedWithEmployee;
+                if (!next && !confirm("Unshare this journey? The employee and their manager line will lose visibility immediately.")) return;
+                if (next && j.JourneyType === "Offboarding" && (j.OffboardReason || "").startsWith("Termination") && !confirm("This is an involuntary termination. Sharing will make the journey visible to the employee. Continue?")) return;
+                setSaving(true);
+                try { await actions.updateJourney(j.id, { SharedWithEmployee: next }); }
+                catch (e) { alert("Failed to update: " + e.message); }
+                finally { setSaving(false); }
+              }}
+            >
+              {j.SharedWithEmployee ? "Unshare" : "Share with employee"}
+            </button>
+          )}
+        </div>
+      )}
+
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+        <div style={{ ...S.sec, marginBottom: 0 }}>Tasks</div>
+        {canEdit && j.Status !== "Cancelled" && j.Status !== "Complete" && (
+          <button style={{ ...S.btnO(C.t5), ...S.xs }} onClick={() => actions.openAddTask(j.id)}>+ Add Task</button>
+        )}
+      </div>
+
       {phases.map(ph => (
         <div key={ph} style={{ marginBottom: 16 }}>
           <div style={{ ...S.sec, marginBottom: 6 }}>{ph}</div>
@@ -1122,6 +1185,99 @@ function JourneyDetailModal({ journeyId, onClose }) {
 // ============================================================
 // TASK EDIT MODAL
 // ============================================================
+// ============================================================
+// AD-HOC TASK MODAL — add a one-off task to an existing journey
+// (lives outside the template — won't recur for future journeys)
+// ============================================================
+function AdHocTaskModal({ journeyId, onClose }) {
+  const { state, actions, currentEmail } = useData();
+  const j = state.journeys.find(x => String(x.id) === String(journeyId));
+  const anchor = j ? journeyAnchorDate(j) : todayIso();
+  const [f, setF] = useState({
+    Title: "",
+    Phase: "Ad-hoc",
+    AssigneeRole: "HR",
+    AssigneeEmail: "",
+    DueDate: anchor || todayIso(),
+    Required: true,
+    Notes: "",
+    Status: "Pending",
+  });
+  const [saving, setSaving] = useState(false);
+  if (!j) return null;
+
+  // Auto-compute OffsetDays from the chosen due date so re-anchoring (Start/End-date edits)
+  // moves this task along with the rest.
+  const offset = anchor && f.DueDate ? Math.round((new Date(f.DueDate) - new Date(anchor)) / 86400000) : 0;
+
+  const save = async () => {
+    if (!f.Title.trim()) return alert("Title is required.");
+    setSaving(true);
+    try {
+      await actions.createTask({
+        JourneyId: String(j.id),
+        EmployeeEmail: (j.EmployeeEmail || "").toLowerCase(),
+        Phase: f.Phase || "Ad-hoc",
+        Title: f.Title.trim(),
+        AssigneeRole: f.AssigneeRole || "",
+        AssigneeEmail: f.AssigneeRole === "Manager"
+          ? (j.ManagerEmail || "").toLowerCase()
+          : f.AssigneeRole === "Employee"
+          ? (j.EmployeeEmail || "").toLowerCase()
+          : (f.AssigneeEmail || "").toLowerCase(),
+        DueDate: f.DueDate || "",
+        OffsetDays: offset,
+        Required: !!f.Required,
+        Status: "Pending",
+        Notes: f.Notes || "",
+        OrderIdx: 9999, // sort to the bottom within its phase
+        TemplateId: "",
+      });
+      await actions.reload();
+      onClose();
+    } catch (e) { alert("Failed to add task: " + e.message); } finally { setSaving(false); }
+  };
+
+  return (
+    <Modal title={`Add Task — ${j.JourneyType}: ${j.EmployeeName || j.EmployeeEmail}`} width={620} onClose={onClose} footer={
+      <>
+        <button style={S.btnO()} onClick={onClose} disabled={saving}>Cancel</button>
+        <button style={S.btn(C.hdr)} onClick={save} disabled={saving}>{saving ? "Adding…" : "Add Task"}</button>
+      </>
+    }>
+      <div style={{ display: "grid", gap: 12 }}>
+        <div><label style={S.label}>Title *</label><input style={S.input} value={f.Title} placeholder="What needs to happen?" onChange={e => setF({ ...f, Title: e.target.value })} autoFocus /></div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <div><label style={S.label}>Phase</label><input style={S.input} list="phase-suggestions" value={f.Phase} onChange={e => setF({ ...f, Phase: e.target.value })} />
+            <datalist id="phase-suggestions">
+              {uniq(state.journeyTasks.filter(t => String(t.JourneyId) === String(j.id)).map(t => t.Phase)).filter(Boolean).map(p => <option key={p} value={p} />)}
+              <option value="Ad-hoc" />
+            </datalist>
+          </div>
+          <div><label style={S.label}>Due Date</label><input style={S.input} type="date" value={f.DueDate || ""} onChange={e => setF({ ...f, DueDate: e.target.value })} /></div>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <div><label style={S.label}>Assignee Role</label>
+            <select style={S.select} value={f.AssigneeRole} onChange={e => setF({ ...f, AssigneeRole: e.target.value })}>
+              <option value="">—</option><option>HR</option><option>IT</option><option>Manager</option><option>Employee</option><option>Admin</option><option>Accounting</option>
+            </select>
+          </div>
+          <div><label style={S.label}>Assignee Email (override)</label>
+            <input style={S.input} value={f.AssigneeEmail} disabled={f.AssigneeRole === "Manager" || f.AssigneeRole === "Employee"}
+              placeholder={f.AssigneeRole === "Manager" ? (j.ManagerEmail || "—") : f.AssigneeRole === "Employee" ? (j.EmployeeEmail || "—") : "optional"}
+              onChange={e => setF({ ...f, AssigneeEmail: e.target.value.toLowerCase() })} />
+          </div>
+        </div>
+        <div><label style={S.label}>Notes</label><textarea style={S.textarea} value={f.Notes} onChange={e => setF({ ...f, Notes: e.target.value })} /></div>
+        <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}><input type="checkbox" checked={f.Required} onChange={e => setF({ ...f, Required: e.target.checked })} /> Required</label>
+        <div style={{ fontSize: 11, color: C.b4 }}>
+          Anchor offset: <strong style={{ fontFamily: mono }}>{offset > 0 ? "+" : ""}{offset}d</strong> from {j.JourneyType === "Offboarding" ? "last day" : "start date"} — task moves with the anchor if it's edited later.
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 function TaskEditModal({ taskId, onClose }) {
   const { state, actions } = useData();
   const t = state.journeyTasks.find(x => String(x.id) === String(taskId));
@@ -2788,6 +2944,7 @@ function App() {
   const [newReviewFor, setNewReviewFor] = useState(null);
   const [editPayId, setEditPayId] = useState(null);
   const [newPayFor, setNewPayFor] = useState(null);
+  const [adHocTaskForJourneyId, setAdHocTaskForJourneyId] = useState(null);
 
   const currentEmail = (acct?.username || "").toLowerCase();
   const me = state.employees.find(e => (e.Email || "").toLowerCase() === currentEmail);
@@ -2816,6 +2973,7 @@ function App() {
   const actions = useMemo(() => ({
     reload,
     openTaskEdit: id => setEditTaskId(id),
+    openAddTask: journeyId => setAdHocTaskForJourneyId(journeyId),
     openJourney: id => setOpenJourneyId(id),
     openEmployee: email => setOpenEmployeeEmail((email || "").toLowerCase()),
     openNoteEdit: id => setEditNoteId(id),
@@ -2972,8 +3130,10 @@ function App() {
     </div>
   );
 
-  const obCount = state.journeys.filter(j => j.JourneyType === "Onboarding" && j.Status !== "Complete" && j.Status !== "Cancelled").length;
-  const offCount = state.journeys.filter(j => j.JourneyType === "Offboarding" && j.Status !== "Complete" && j.Status !== "Cancelled").length;
+  // Header counts respect the same visibility rule as the tabs themselves —
+  // a regular Employee shouldn't see "3 offboardings" if they can't see any.
+  const obCount = state.journeys.filter(j => j.JourneyType === "Onboarding" && j.Status !== "Complete" && j.Status !== "Cancelled" && canSeeJourney(j, hasRole, currentEmail, state.employees)).length;
+  const offCount = state.journeys.filter(j => j.JourneyType === "Offboarding" && j.Status !== "Complete" && j.Status !== "Cancelled" && canSeeJourney(j, hasRole, currentEmail, state.employees)).length;
   const myCount = state.journeyTasks.filter(t => t.Status !== "Done" && taskIsMine(t, currentEmail, hasRole)).length;
 
   const isAdmin = hasRole("Admin", "HR");
@@ -3013,6 +3173,7 @@ function App() {
         {(editNoteId || newNoteFor) && <NoteEditModal noteId={editNoteId} forEmail={newNoteFor} onClose={() => { setEditNoteId(null); setNewNoteFor(null); }} />}
         {(editReviewId || newReviewFor) && <ReviewEditModal reviewId={editReviewId} forEmail={newReviewFor} onClose={() => { setEditReviewId(null); setNewReviewFor(null); }} />}
         {(editPayId || newPayFor) && <PayChangeEditModal payId={editPayId} forEmail={newPayFor} onClose={() => { setEditPayId(null); setNewPayFor(null); }} />}
+        {adHocTaskForJourneyId && <AdHocTaskModal journeyId={adHocTaskForJourneyId} onClose={() => setAdHocTaskForJourneyId(null)} />}
       </div>
     </DataCtx.Provider>
   );

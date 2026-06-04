@@ -208,6 +208,7 @@ $ELC_Journeys = Ensure-List -Name 'ELC_Journeys' -Description 'One row per onboa
     (ColText      'CreatedBy')
     (ColText      'OffboardReason')
     (ColText      'TemplateGroup')
+    (ColYesNo     'SharedWithEmployee' $false)
 )
 
 Write-Step "Provisioning ELC_TemplateTasks"

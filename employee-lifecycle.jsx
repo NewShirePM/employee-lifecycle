@@ -206,13 +206,23 @@ async function gAll(token, url) {
   }
   return out;
 }
-// Strip empty/undefined values — SharePoint rejects "" for Date/Number/Boolean
-// columns with "badArgument". Keeps false (Yes/No) and 0 (Number) intentionally.
+// Strip empty/undefined values + SharePoint system fields — SharePoint rejects
+// "" for Date/Number/Boolean columns with "badArgument", and rejects PATCHing
+// the system-owned fields (id, Created, Modified, etc.) with "Field 'id' is not
+// recognized". Keeps false (Yes/No) and 0 (Number) intentionally.
+const SYSTEM_FIELDS = new Set([
+  "id", "Created", "Modified", "_UIVersionString",
+  "ContentType", "ContentTypeId", "Attachments", "Order",
+  "AuthorLookupId", "EditorLookupId", "Author", "Editor",
+  "LinkTitle", "LinkTitleNoMenu", "AppAuthor", "AppEditor",
+]);
 function cleanFields(fields) {
   const out = {};
   for (const [k, v] of Object.entries(fields || {})) {
     if (v === undefined || v === null) continue;
     if (typeof v === "string" && v.trim() === "") continue;
+    if (SYSTEM_FIELDS.has(k)) continue;
+    if (k.startsWith("@") || k.startsWith("_")) continue;
     out[k] = v;
   }
   return out;

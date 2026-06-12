@@ -223,7 +223,9 @@ const SYSTEM_FIELDS = new Set([
   "id", "Created", "Modified", "_UIVersionString",
   "ContentType", "ContentTypeId", "Attachments", "Order",
   "AuthorLookupId", "EditorLookupId", "Author", "Editor",
-  "LinkTitle", "LinkTitleNoMenu", "AppAuthor", "AppEditor",
+  "LinkTitle", "LinkTitleNoMenu",
+  "AppAuthor", "AppEditor", "AppAuthorLookupId", "AppEditorLookupId",
+  "AppCreated", "AppModified",
   // Counts and folder/file metadata that come back from Graph but are
   // never user-writable on a list item.
   "ItemChildCount", "FolderChildCount",

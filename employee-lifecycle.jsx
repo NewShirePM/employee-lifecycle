@@ -2305,6 +2305,10 @@ function emailVars({ emp, manager, sender, journey }) {
     EndDate: emp?.EndDate ? fmtDate(emp.EndDate) : "",
     ManagerName: manager?.Title || manager?.Name || "",
     ManagerEmail: manager?.Email || emp?.ManagerEmail || "",
+    Level2ManagerName: emp?.Level2ManagerName || "",
+    Level2ManagerEmail: emp?.Level2ManagerEmail || "",
+    Level3ManagerName: emp?.Level3ManagerName || "",
+    Level3ManagerEmail: emp?.Level3ManagerEmail || "",
     SenderName: sender?.Title || sender?.Name || sender?.Email || "",
     SenderEmail: sender?.Email || "",
     Today: fmtDate(today.toISOString().slice(0, 10)),
@@ -2345,6 +2349,8 @@ function SendEmailModal({ forEmail, onClose }) {
   const [toWork, setToWork] = useState(true);
   const [toPersonal, setToPersonal] = useState(false);
   const [toManager, setToManager] = useState(false);
+  const [toL2, setToL2] = useState(false);
+  const [toL3, setToL3] = useState(false);
   const [extraTo, setExtraTo] = useState("");
   const [cc, setCc] = useState("");
   const [subject, setSubject] = useState("");
@@ -2370,6 +2376,8 @@ function SendEmailModal({ forEmail, onClose }) {
     setToWork(dt.includes("Work"));
     setToPersonal(dt.includes("Personal"));
     setToManager(dt.includes("Manager") || /\{\{\s*ManagerEmail\s*\}\}/.test(t.DefaultCc || ""));
+    setToL2(dt.includes("Level2Manager") || /\{\{\s*Level2ManagerEmail\s*\}\}/.test(t.DefaultCc || ""));
+    setToL3(dt.includes("Level3Manager") || /\{\{\s*Level3ManagerEmail\s*\}\}/.test(t.DefaultCc || ""));
     if (t.DefaultCc) setCc(applyVars(t.DefaultCc, vars));
   };
 
@@ -2383,9 +2391,11 @@ function SendEmailModal({ forEmail, onClose }) {
       const m = (manager?.Email || emp.ManagerEmail || "").toLowerCase();
       if (m) out.add(m);
     }
+    if (toL2 && emp.Level2ManagerEmail) out.add(emp.Level2ManagerEmail.toLowerCase());
+    if (toL3 && emp.Level3ManagerEmail) out.add(emp.Level3ManagerEmail.toLowerCase());
     extraTo.split(/[,;]/).map(s => s.trim().toLowerCase()).filter(Boolean).forEach(a => out.add(a));
     return Array.from(out);
-  }, [toWork, toPersonal, toManager, extraTo, emp, manager]);
+  }, [toWork, toPersonal, toManager, toL2, toL3, extraTo, emp, manager]);
   const ccList = useMemo(() => {
     return Array.from(new Set(applyVars(cc, vars).split(/[,;\n]/).map(s => s.trim().toLowerCase()).filter(Boolean)));
   }, [cc, vars]);
@@ -2396,6 +2406,8 @@ function SendEmailModal({ forEmail, onClose }) {
     if (!renderedSubject.trim()) return setWarn("Subject is required.");
     if (toPersonal && !emp.PersonalEmail) return setWarn(`No personal email on file for ${emp.Title || emp.Email}. Add one on the Profile tab first, or uncheck "Personal email".`);
     if (toManager && !(manager?.Email || emp.ManagerEmail)) return setWarn("No manager email on file for this employee.");
+    if (toL2 && !emp.Level2ManagerEmail) return setWarn(`No 2nd-level manager email on file for ${emp.Title || emp.Email}.`);
+    if (toL3 && !emp.Level3ManagerEmail) return setWarn(`No 3rd-level manager email on file for ${emp.Title || emp.Email}.`);
     if (unresolved.length > 0 && !confirm(`These variables didn't resolve and will send as-is: ${unresolved.join(", ")}. Send anyway?`)) return;
 
     setSending(true);
@@ -2441,6 +2453,14 @@ function SendEmailModal({ forEmail, onClose }) {
             <label style={{ display: "flex", alignItems: "center", gap: 6, color: (manager?.Email || emp.ManagerEmail) ? C.t7 : C.b3 }}>
               <input type="checkbox" checked={toManager} disabled={!(manager?.Email || emp.ManagerEmail)} onChange={e => setToManager(e.target.checked)} />
               Manager — <code style={{ fontFamily: mono, fontSize: 12 }}>{manager?.Email || emp.ManagerEmail || "(no manager on file)"}</code>
+            </label>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, color: emp.Level2ManagerEmail ? C.t7 : C.b3 }}>
+              <input type="checkbox" checked={toL2} disabled={!emp.Level2ManagerEmail} onChange={e => setToL2(e.target.checked)} />
+              2nd-Level — <code style={{ fontFamily: mono, fontSize: 12 }}>{emp.Level2ManagerEmail || "(none on file)"}</code>{emp.Level2ManagerName ? <span style={{ marginLeft: 4, color: C.b4 }}>({emp.Level2ManagerName})</span> : null}
+            </label>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, color: emp.Level3ManagerEmail ? C.t7 : C.b3 }}>
+              <input type="checkbox" checked={toL3} disabled={!emp.Level3ManagerEmail} onChange={e => setToL3(e.target.checked)} />
+              3rd-Level — <code style={{ fontFamily: mono, fontSize: 12 }}>{emp.Level3ManagerEmail || "(none on file)"}</code>{emp.Level3ManagerName ? <span style={{ marginLeft: 4, color: C.b4 }}>({emp.Level3ManagerName})</span> : null}
             </label>
           </div>
           <input style={{ ...S.input, marginTop: 6 }} value={extraTo} placeholder="Other To addresses (comma-separated)" onChange={e => setExtraTo(e.target.value)} />
@@ -2521,6 +2541,8 @@ function EmailTemplateEditModal({ tplId, onClose }) {
             <label style={{ display: "flex", gap: 6 }}><input type="checkbox" checked={toFlags.includes("Work")} onChange={() => flipTo("Work")} /> Work email</label>
             <label style={{ display: "flex", gap: 6 }}><input type="checkbox" checked={toFlags.includes("Personal")} onChange={() => flipTo("Personal")} /> Personal email</label>
             <label style={{ display: "flex", gap: 6 }}><input type="checkbox" checked={toFlags.includes("Manager")} onChange={() => flipTo("Manager")} /> Manager</label>
+            <label style={{ display: "flex", gap: 6 }}><input type="checkbox" checked={toFlags.includes("Level2Manager")} onChange={() => flipTo("Level2Manager")} /> 2nd-Level Manager</label>
+            <label style={{ display: "flex", gap: 6 }}><input type="checkbox" checked={toFlags.includes("Level3Manager")} onChange={() => flipTo("Level3Manager")} /> 3rd-Level Manager</label>
           </div>
         </div>
         <div><label style={S.label}>Default CC (literal or {`{{Vars}}`})</label><input style={S.input} value={f.DefaultCc} placeholder="hr@newshirepm.com, {{ManagerEmail}}" onChange={e => setF({ ...f, DefaultCc: e.target.value })} /></div>
@@ -2528,7 +2550,7 @@ function EmailTemplateEditModal({ tplId, onClose }) {
         <div><label style={S.label}>Body</label><textarea style={{ ...S.textarea, minHeight: 220, fontFamily: mono, fontSize: 13 }} value={f.Body} onChange={e => setF({ ...f, Body: e.target.value })} /></div>
         <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}><input type="checkbox" checked={f.Active !== false} onChange={e => setF({ ...f, Active: e.target.checked })} /> Active (appears in the Send modal)</label>
         <div style={{ background: C.t0, border: `1px solid ${C.t1}`, borderRadius: 4, padding: 10, fontSize: 11, color: C.b6 }}>
-          <strong>Variables:</strong> {`{{FirstName}}`}, {`{{LastName}}`}, {`{{FullName}}`}, {`{{PreferredName}}`}, {`{{WorkEmail}}`}, {`{{PersonalEmail}}`}, {`{{JobTitle}}`}, {`{{Department}}`}, {`{{StartDate}}`}, {`{{EndDate}}`}, {`{{ManagerName}}`}, {`{{ManagerEmail}}`}, {`{{SenderName}}`}, {`{{SenderEmail}}`}, {`{{Today}}`}, {`{{JourneyType}}`}.
+          <strong>Variables:</strong> {`{{FirstName}}`}, {`{{LastName}}`}, {`{{FullName}}`}, {`{{PreferredName}}`}, {`{{WorkEmail}}`}, {`{{PersonalEmail}}`}, {`{{JobTitle}}`}, {`{{Department}}`}, {`{{StartDate}}`}, {`{{EndDate}}`}, {`{{ManagerName}}`}, {`{{ManagerEmail}}`}, {`{{Level2ManagerName}}`}, {`{{Level2ManagerEmail}}`}, {`{{Level3ManagerName}}`}, {`{{Level3ManagerEmail}}`}, {`{{SenderName}}`}, {`{{SenderEmail}}`}, {`{{Today}}`}, {`{{JourneyType}}`}.
         </div>
       </div>
     </Modal>

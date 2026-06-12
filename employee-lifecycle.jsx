@@ -2569,7 +2569,13 @@ function EmployeeDetailModal({ email, onClose }) {
   const [saving, setSaving] = useState(false);
   const [permDraft, setPermDraft] = useState({});
   const [permReason, setPermReason] = useState("");
-  const [profileDraft, setProfileDraft] = useState(() => emp ? { Title: emp.Title || "", JobTitle: emp.JobTitle || "", Email: emp.Email || "", PersonalEmail: emp.PersonalEmail || "", ManagerEmail: emp.ManagerEmail || "", Department: emp.Department || "", EmployeeActive: emp.EmployeeActive !== false } : { EmployeeActive: true });
+  const [profileDraft, setProfileDraft] = useState(() => emp ? {
+    Title: emp.Title || "", JobTitle: emp.JobTitle || "", Email: emp.Email || "",
+    PersonalEmail: emp.PersonalEmail || "", ManagerEmail: emp.ManagerEmail || "",
+    Department: emp.Department || "", EmployeeActive: emp.EmployeeActive !== false,
+    EC1Name: emp.EC1Name || "", EC1Relationship: emp.EC1Relationship || "", EC1Phone: emp.EC1Phone || "", EC1Email: emp.EC1Email || "",
+    EC2Name: emp.EC2Name || "", EC2Relationship: emp.EC2Relationship || "", EC2Phone: emp.EC2Phone || "", EC2Email: emp.EC2Email || "",
+  } : { EmployeeActive: true });
   const canEdit = hasRole("Admin", "HR");
 
   const journeys = useMemo(() => emp ? state.journeys.filter(j => (j.EmployeeEmail || "").toLowerCase() === email).sort((a, b) => (b.Modified || "").localeCompare(a.Modified || "")) : [], [emp, state.journeys, email]);
@@ -2667,6 +2673,29 @@ function EmployeeDetailModal({ email, onClose }) {
                   <option value="active">Active</option><option value="inactive">Inactive</option>
                 </select>
               </div>
+            </div>
+            <div style={{ marginTop: 8 }}>
+              <div style={S.sec}>Emergency Contacts</div>
+              <div style={{ fontSize: 11, color: C.b4, marginBottom: 10 }}>Used for HR + manager only in the event of emergency. Confidential.</div>
+              {[1, 2].map(n => {
+                const k = (suf) => `EC${n}${suf}`;
+                const label = n === 1 ? "Primary" : "Secondary";
+                return (
+                  <div key={n} style={{ background: C.t0, border: `1px solid ${C.t1}`, borderRadius: 6, padding: 12, marginBottom: 10 }}>
+                    <div style={{ fontWeight: 700, fontSize: 12, color: C.t7, marginBottom: 8, textTransform: "uppercase", letterSpacing: ".06em" }}>{label}{n === 2 && " (optional)"}</div>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                      <div><label style={S.label}>Name</label><input style={S.input} disabled={!canEdit} value={profileDraft[k("Name")] || ""} onChange={e => setProfileDraft({ ...profileDraft, [k("Name")]: e.target.value })} /></div>
+                      <div><label style={S.label}>Relationship</label><input style={S.input} list={`ec-relationships-${n}`} disabled={!canEdit} value={profileDraft[k("Relationship")] || ""} placeholder="Spouse, Parent, Sibling…" onChange={e => setProfileDraft({ ...profileDraft, [k("Relationship")]: e.target.value })} />
+                        <datalist id={`ec-relationships-${n}`}>
+                          {["Spouse","Partner","Parent","Child","Sibling","Friend","Guardian","Other"].map(r => <option key={r} value={r} />)}
+                        </datalist>
+                      </div>
+                      <div><label style={S.label}>Phone</label><input style={S.input} type="tel" disabled={!canEdit} value={profileDraft[k("Phone")] || ""} placeholder="(555) 555-5555" onChange={e => setProfileDraft({ ...profileDraft, [k("Phone")]: e.target.value })} /></div>
+                      <div><label style={S.label}>Email <span style={{ color: C.b4 }}>(optional)</span></label><input style={S.input} type="email" disabled={!canEdit} value={profileDraft[k("Email")] || ""} onChange={e => setProfileDraft({ ...profileDraft, [k("Email")]: e.target.value.toLowerCase() })} /></div>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
             {canEdit && <div style={{ display: "flex", justifyContent: "flex-end" }}><button style={S.btn(C.hdr)} disabled={saving} onClick={saveProfile}>{saving ? "Saving…" : "Save Profile"}</button></div>}
           </div>

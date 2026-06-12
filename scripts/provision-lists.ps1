@@ -333,6 +333,17 @@ $ELC_PayChanges = Ensure-List -Name 'ELC_PayChanges' -Description 'Compensation 
     (ColYesNo     'Confidential' $true)
 )
 
+Write-Step "Provisioning ELC_EmailTemplates"
+$ELC_EmailTemplates = Ensure-List -Name 'ELC_EmailTemplates' -Description 'Reusable email templates with {{var}} substitution' -Columns @(
+    (ColChoice    'Category' @('Welcome','Onboarding','Reminder','Performance','Offboarding','Celebration','Other') 'Other')
+    (ColText      'Subject')
+    (ColMultiText 'Body')
+    (ColText      'DefaultTo')
+    (ColText      'DefaultCc')
+    (ColYesNo     'Active' $true)
+    (ColMultiText 'Notes')
+)
+
 # ─────────────────────────────────────────────────────────────
 # SEED — Apps registry
 # ─────────────────────────────────────────────────────────────
@@ -400,6 +411,6 @@ Write-Host "  Lists provisioned (or already present):" -ForegroundColor Gray
 @(
     'ELC_Journeys', 'ELC_TemplateTasks', 'ELC_JourneyTasks', 'ELC_Config',
     'ELC_Apps', 'ELC_EmployeeNotes', 'ELC_PermissionAudit', 'ELC_EmployeeFiles',
-    'ELC_QuarterlyReviews', 'ELC_PayChanges'
+    'ELC_QuarterlyReviews', 'ELC_PayChanges', 'ELC_EmailTemplates'
 ) | ForEach-Object { Write-Host "    - $_" -ForegroundColor Gray }
 Write-Host ""

@@ -24,6 +24,7 @@ const CONFIG = {
     files:               "ELC_EmployeeFiles",     // SharePoint document library
     reviews:             "ELC_QuarterlyReviews",  // quarterly performance reviews
     payChanges:          "ELC_PayChanges",        // compensation history
+    emailTemplates:      "ELC_EmailTemplates",    // reusable email templates with {{var}} substitution
   },
   reviewIntervalDays: 90,         // expected cadence between reviews (once a baseline exists)
   reviewOverdueDays: 100,         // flag as overdue once gap exceeds this
@@ -736,7 +737,7 @@ function normalizeApp(raw) {
 }
 
 async function loadAll(token) {
-  const [emp, jrn, tpl, jt, cfg, apps, notes, audit, reviews, pay] = await Promise.all([
+  const [emp, jrn, tpl, jt, cfg, apps, notes, audit, reviews, pay, emailTpl] = await Promise.all([
     safeGet(token, "Employees",      `${lUrl(CONFIG.lists.employees)}?expand=fields&$top=500`),
     safeGet(token, "Journeys",       `${lUrl(CONFIG.lists.journeys)}?expand=fields&$top=500`),
     safeGet(token, "TemplateTasks",  `${lUrl(CONFIG.lists.templateTasks)}?expand=fields&$top=500`),
@@ -747,6 +748,7 @@ async function loadAll(token) {
     safeGet(token, "Audit",          `${lUrl(CONFIG.lists.audit)}?expand=fields&$top=2000`),
     safeGet(token, "Reviews",        `${lUrl(CONFIG.lists.reviews)}?expand=fields&$top=2000`),
     safeGet(token, "PayChanges",     `${lUrl(CONFIG.lists.payChanges)}?expand=fields&$top=2000`),
+    safeGet(token, "EmailTemplates", `${lUrl(CONFIG.lists.emailTemplates)}?expand=fields&$top=200`),
   ]);
   const employees = emp.map(e => ({ id: e.id, ...e.fields }));
   const journeys = jrn.map(j => ({ id: j.id, ...j.fields }));
@@ -758,8 +760,9 @@ async function loadAll(token) {
   const auditList = audit.map(a => ({ id: a.id, ...a.fields }));
   const reviewsList = reviews.map(r => ({ id: r.id, ...r.fields }));
   const payChangesList = pay.map(p => ({ id: p.id, ...p.fields }));
+  const emailTemplatesList = emailTpl.map(t => ({ id: t.id, ...t.fields })).filter(t => t.Active !== false).sort((a, b) => (a.Category || "").localeCompare(b.Category || "") || (a.Title || "").localeCompare(b.Title || ""));
   const config = cfg.length > 0 ? (() => { try { return JSON.parse(cfg[0].fields.ConfigJSON || "{}"); } catch { return {}; } })() : {};
-  return { employees, journeys, templates, journeyTasks, config, apps: appsList, notes: notesList, audit: auditList, reviews: reviewsList, payChanges: payChangesList };
+  return { employees, journeys, templates, journeyTasks, config, apps: appsList, notes: notesList, audit: auditList, reviews: reviewsList, payChanges: payChangesList, emailTemplates: emailTemplatesList };
 }
 
 // ============================================================
@@ -2278,6 +2281,261 @@ function PayChangeEditModal({ payId, forEmail, onClose }) {
 }
 
 // ============================================================
+// EMAIL TEMPLATES — variable substitution, default library, send modal
+// ============================================================
+const EMAIL_TEMPLATE_CATEGORIES = ["Welcome", "Onboarding", "Reminder", "Performance", "Offboarding", "Celebration", "Other"];
+
+// Resolves {{Vars}} using the employee record + manager + a few fixed values.
+// Unrecognised tokens are left as-is so authors can see what didn't match.
+function emailVars({ emp, manager, sender, journey }) {
+  const today = new Date();
+  const fullName = emp?.Title || emp?.Name || "";
+  const firstName = (fullName || "").split(/\s+/)[0] || "";
+  const lastName  = (fullName || "").split(/\s+/).slice(1).join(" ") || "";
+  return {
+    FirstName: firstName,
+    LastName: lastName,
+    FullName: fullName,
+    PreferredName: emp?.PreferredName || firstName,
+    WorkEmail: emp?.Email || "",
+    PersonalEmail: emp?.PersonalEmail || "",
+    JobTitle: emp?.JobTitle || "",
+    Department: emp?.Department || "",
+    StartDate: emp?.StartDate ? fmtDate(emp.StartDate) : "",
+    EndDate: emp?.EndDate ? fmtDate(emp.EndDate) : "",
+    ManagerName: manager?.Title || manager?.Name || "",
+    ManagerEmail: manager?.Email || emp?.ManagerEmail || "",
+    SenderName: sender?.Title || sender?.Name || sender?.Email || "",
+    SenderEmail: sender?.Email || "",
+    Today: fmtDate(today.toISOString().slice(0, 10)),
+    JourneyType: journey?.JourneyType || "",
+  };
+}
+function applyVars(text, vars) {
+  if (!text) return "";
+  return String(text).replace(/\{\{\s*([A-Za-z][A-Za-z0-9_]*)\s*\}\}/g, (m, k) => (vars[k] != null && vars[k] !== "" ? vars[k] : m));
+}
+// Detect any unsubstituted {{Vars}} so the SendEmailModal can warn before sending.
+function unresolvedVars(text) {
+  if (!text) return [];
+  return Array.from(new Set((String(text).match(/\{\{\s*[A-Za-z][A-Za-z0-9_]*\s*\}\}/g) || []).map(s => s.replace(/[{} ]/g, ""))));
+}
+
+// Compact starter library — seeded by an admin from Setup -> Email Templates.
+const DEFAULT_EMAIL_TEMPLATES = [
+  { Title: "Welcome — Day 1", Category: "Welcome", DefaultTo: "Work,Personal", DefaultCc: "{{ManagerEmail}}", Subject: "Welcome to NewShire, {{FirstName}}!", Body: "Hi {{FirstName}},\n\nWelcome to NewShire! Your first day is {{StartDate}}. Your manager, {{ManagerName}}, will greet you and walk you through Day 1 logistics.\n\nA few links to keep handy:\n• Employee Lifecycle app (where you'll find your onboarding tasks)\n• NewShire University (training)\n\nReach out to {{SenderName}} or {{ManagerName}} if anything comes up before then.\n\nWelcome aboard,\n{{SenderName}}" },
+  { Title: "Pre-Start — confirm Day 1 logistics", Category: "Onboarding", DefaultTo: "Personal", DefaultCc: "", Subject: "Day 1 logistics — your start at NewShire on {{StartDate}}", Body: "Hi {{FirstName}},\n\nA quick note to confirm logistics for your first day:\n\n• Start date: {{StartDate}}\n• Start time: 9:00 AM\n• Location: 333 Wade Hampton Blvd\n• Who to ask for: {{ManagerName}}\n• Parking: visitor lot, we'll get you a badge\n• Bring: I-9 ID documents (passport OR driver's license + SSN card/birth certificate)\n• Dress: business casual\n\nReply if you have any questions.\n\nLooking forward to it,\n{{SenderName}}" },
+  { Title: "30-day check-in reminder", Category: "Reminder", DefaultTo: "Work", DefaultCc: "{{ManagerEmail}}", Subject: "30-day check-in coming up — {{FullName}}", Body: "{{ManagerName}},\n\nThis is a reminder that {{FullName}}'s 30-day check-in is coming up. Please schedule a 30-minute conversation covering:\n\n• What's working / what's unclear\n• Where they're stuck\n• Adjustments to their training plan\n\nThanks,\n{{SenderName}}" },
+  { Title: "90-day review notice", Category: "Performance", DefaultTo: "Work", DefaultCc: "{{ManagerEmail}}", Subject: "90-day review due — {{FullName}}", Body: "{{ManagerName}},\n\nIt's time for {{FullName}}'s 90-day review and probation decision. Please complete the review in the Employee Lifecycle app and confirm whether they pass probation.\n\nBenefits enrollment is also due now — HR will reach out separately.\n\nThanks,\n{{SenderName}}" },
+  { Title: "Resignation acknowledgement", Category: "Offboarding", DefaultTo: "Work,Personal", DefaultCc: "{{ManagerEmail}}", Subject: "Confirming your resignation — last day {{EndDate}}", Body: "Hi {{FirstName}},\n\nWe've received your resignation and confirmed your last working day as {{EndDate}}.\n\nIn the coming weeks we'll walk through:\n• Knowledge transfer and successor coverage\n• Final timesheet + expense reports\n• Equipment return\n• Exit interview\n\nYou'll see these as tasks in the Employee Lifecycle app. Reach out anytime.\n\nThanks for your contributions, {{FirstName}}.\n\n{{SenderName}}" },
+  { Title: "Birthday", Category: "Celebration", DefaultTo: "Work", DefaultCc: "", Subject: "Happy birthday, {{FirstName}}! 🎂", Body: "Hi {{FirstName}},\n\nThe whole NewShire team is wishing you a happy birthday today. Hope you get to celebrate with the people you love.\n\nCheers,\n{{SenderName}}" },
+  { Title: "Anniversary — one year", Category: "Celebration", DefaultTo: "Work", DefaultCc: "{{ManagerEmail}}", Subject: "One year at NewShire — congrats, {{FirstName}}!", Body: "Hi {{FirstName}},\n\nIt's been a year since you joined NewShire on {{StartDate}}. Thank you for everything you've done in your time here — we're glad you're with us.\n\nLooking forward to many more,\n{{SenderName}}" },
+];
+
+// ============================================================
+// SEND EMAIL MODAL — compose from a template, pick recipients (work / personal / manager) + CC
+// ============================================================
+function SendEmailModal({ forEmail, onClose }) {
+  const { state, actions, currentEmail } = useData();
+  const emp = state.employees.find(e => (e.Email || "").toLowerCase() === (forEmail || "").toLowerCase());
+  const manager = emp ? state.employees.find(e => (e.Email || "").toLowerCase() === (emp.ManagerEmail || "").toLowerCase()) : null;
+  const sender = state.employees.find(e => (e.Email || "").toLowerCase() === (currentEmail || "").toLowerCase()) || { Email: currentEmail };
+
+  const [tplId, setTplId] = useState("");
+  const [toWork, setToWork] = useState(true);
+  const [toPersonal, setToPersonal] = useState(false);
+  const [toManager, setToManager] = useState(false);
+  const [extraTo, setExtraTo] = useState("");
+  const [cc, setCc] = useState("");
+  const [subject, setSubject] = useState("");
+  const [body, setBody] = useState("");
+  const [sending, setSending] = useState(false);
+  const [warn, setWarn] = useState("");
+
+  const vars = useMemo(() => emailVars({ emp, manager, sender }), [emp, manager, sender]);
+  const renderedSubject = applyVars(subject, vars);
+  const renderedBody = applyVars(body, vars);
+  const unresolved = uniq([...unresolvedVars(renderedSubject), ...unresolvedVars(renderedBody)]);
+
+  // Load a template by id — uses defaults for To/Cc the first time.
+  const loadTemplate = (id) => {
+    setTplId(id);
+    setWarn("");
+    if (!id) { setSubject(""); setBody(""); return; }
+    const t = state.emailTemplates.find(x => String(x.id) === String(id));
+    if (!t) return;
+    setSubject(t.Subject || "");
+    setBody(t.Body || "");
+    const dt = (t.DefaultTo || "").split(",").map(s => s.trim()).filter(Boolean);
+    setToWork(dt.includes("Work"));
+    setToPersonal(dt.includes("Personal"));
+    setToManager(dt.includes("Manager") || /\{\{\s*ManagerEmail\s*\}\}/.test(t.DefaultCc || ""));
+    if (t.DefaultCc) setCc(applyVars(t.DefaultCc, vars));
+  };
+
+  if (!emp) return <Modal title="Send Email" onClose={onClose}><Empty title="Employee not found" sub={forEmail} /></Modal>;
+
+  const recipients = useMemo(() => {
+    const out = new Set();
+    if (toWork && emp.Email) out.add(emp.Email.toLowerCase());
+    if (toPersonal && emp.PersonalEmail) out.add(emp.PersonalEmail.toLowerCase());
+    if (toManager) {
+      const m = (manager?.Email || emp.ManagerEmail || "").toLowerCase();
+      if (m) out.add(m);
+    }
+    extraTo.split(/[,;]/).map(s => s.trim().toLowerCase()).filter(Boolean).forEach(a => out.add(a));
+    return Array.from(out);
+  }, [toWork, toPersonal, toManager, extraTo, emp, manager]);
+  const ccList = useMemo(() => {
+    return Array.from(new Set(applyVars(cc, vars).split(/[,;\n]/).map(s => s.trim().toLowerCase()).filter(Boolean)));
+  }, [cc, vars]);
+
+  const send = async () => {
+    setWarn("");
+    if (recipients.length === 0) return setWarn("Pick at least one recipient.");
+    if (!renderedSubject.trim()) return setWarn("Subject is required.");
+    if (toPersonal && !emp.PersonalEmail) return setWarn(`No personal email on file for ${emp.Title || emp.Email}. Add one on the Profile tab first, or uncheck "Personal email".`);
+    if (toManager && !(manager?.Email || emp.ManagerEmail)) return setWarn("No manager email on file for this employee.");
+    if (unresolved.length > 0 && !confirm(`These variables didn't resolve and will send as-is: ${unresolved.join(", ")}. Send anyway?`)) return;
+
+    setSending(true);
+    try {
+      const bodyHtml = renderedBody.split("\n").map(line => line.length ? `<div>${line.replace(/</g, "&lt;")}</div>` : "<div>&nbsp;</div>").join("");
+      await actions.sendEmail({ to: recipients, cc: ccList, subject: renderedSubject, bodyHtml });
+      // Stamp the employee record with a "last contacted" timestamp for visibility.
+      try { await actions.upsertEmployee({ Email: emp.Email, LastContactedAt: new Date().toISOString(), LastContactedBy: currentEmail }); } catch { /* non-fatal */ }
+      onClose();
+    } catch (e) { setWarn("Send failed: " + e.message); } finally { setSending(false); }
+  };
+
+  return (
+    <Modal title={`Send Email — ${emp.Title || emp.Email}`} width={760} onClose={onClose} footer={
+      <>
+        <button style={S.btnO()} onClick={onClose} disabled={sending}>Cancel</button>
+        <button style={S.btn(C.hdr)} onClick={send} disabled={sending}>{sending ? "Sending…" : "Send"}</button>
+      </>
+    }>
+      <div style={{ display: "grid", gap: 12 }}>
+        <div>
+          <label style={S.label}>Template</label>
+          <select style={S.select} value={tplId} onChange={e => loadTemplate(e.target.value)}>
+            <option value="">— Blank message —</option>
+            {EMAIL_TEMPLATE_CATEGORIES.map(cat => {
+              const items = state.emailTemplates.filter(t => (t.Category || "Other") === cat);
+              if (items.length === 0) return null;
+              return <optgroup key={cat} label={cat}>{items.map(t => <option key={t.id} value={t.id}>{t.Title}</option>)}</optgroup>;
+            })}
+          </select>
+        </div>
+        <div>
+          <div style={S.label}>To</div>
+          <div style={{ display: "flex", gap: 14, flexWrap: "wrap", fontSize: 13 }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <input type="checkbox" checked={toWork} onChange={e => setToWork(e.target.checked)} />
+              Work — <code style={{ fontFamily: mono, fontSize: 12 }}>{emp.Email || "—"}</code>
+            </label>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, color: emp.PersonalEmail ? C.t7 : C.b3 }}>
+              <input type="checkbox" checked={toPersonal} disabled={!emp.PersonalEmail} onChange={e => setToPersonal(e.target.checked)} />
+              Personal — <code style={{ fontFamily: mono, fontSize: 12 }}>{emp.PersonalEmail || "(none on file)"}</code>
+            </label>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, color: (manager?.Email || emp.ManagerEmail) ? C.t7 : C.b3 }}>
+              <input type="checkbox" checked={toManager} disabled={!(manager?.Email || emp.ManagerEmail)} onChange={e => setToManager(e.target.checked)} />
+              Manager — <code style={{ fontFamily: mono, fontSize: 12 }}>{manager?.Email || emp.ManagerEmail || "(no manager on file)"}</code>
+            </label>
+          </div>
+          <input style={{ ...S.input, marginTop: 6 }} value={extraTo} placeholder="Other To addresses (comma-separated)" onChange={e => setExtraTo(e.target.value)} />
+        </div>
+        <div><label style={S.label}>CC (comma-separated; supports {`{{Vars}}`})</label>
+          <input style={S.input} list="elc-emp-emails" value={cc} placeholder="cc1@example.com, cc2@example.com" onChange={e => setCc(e.target.value)} />
+          <datalist id="elc-emp-emails">{state.employees.filter(e => e.Email).map(e => <option key={e.id} value={e.Email}>{e.Title}</option>)}</datalist>
+        </div>
+        <div><label style={S.label}>Subject</label><input style={S.input} value={subject} onChange={e => setSubject(e.target.value)} placeholder="Subject line — {{Vars}} are substituted" /></div>
+        <div><label style={S.label}>Body</label><textarea style={{ ...S.textarea, minHeight: 220, fontFamily: mono, fontSize: 13 }} value={body} placeholder="Hi {{FirstName}}, …" onChange={e => setBody(e.target.value)} /></div>
+        <div style={{ background: C.t0, border: `1px solid ${C.t1}`, borderRadius: 4, padding: 10, fontSize: 12 }}>
+          <div style={S.sec}>Preview</div>
+          <div style={{ fontSize: 12, color: C.b4 }}>Subject:</div>
+          <div style={{ fontWeight: 600, color: C.t7, marginBottom: 6 }}>{renderedSubject || <em style={{ color: C.b4 }}>(empty)</em>}</div>
+          <div style={{ fontSize: 12, color: C.b4 }}>Body:</div>
+          <div style={{ whiteSpace: "pre-wrap", color: C.t7 }}>{renderedBody || <em style={{ color: C.b4 }}>(empty)</em>}</div>
+          {unresolved.length > 0 && <div style={{ marginTop: 8, padding: 6, background: C.wnb, border: `1px solid ${C.wn}33`, borderRadius: 4, fontSize: 11, color: C.wn }}><strong>Unresolved:</strong> {unresolved.join(", ")}</div>}
+        </div>
+        {warn && <div style={{ background: C.erb, color: C.er, padding: 10, borderRadius: 4, fontSize: 12 }}>{warn}</div>}
+        <div style={{ fontSize: 11, color: C.b4 }}>
+          Sent from <strong>{currentEmail}</strong> via Outlook. Recipients see this as a regular email from your account; replies come back to you.
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// ============================================================
+// EMAIL TEMPLATE EDIT MODAL — admin-edits to the reusable library
+// ============================================================
+function EmailTemplateEditModal({ tplId, onClose }) {
+  const { state, actions } = useData();
+  const existing = tplId ? state.emailTemplates.find(t => String(t.id) === String(tplId)) : null;
+  const [f, setF] = useState(() => existing ? { ...existing } : {
+    Title: "", Category: "Other", Subject: "", Body: "", DefaultTo: "Work", DefaultCc: "", Active: true, Notes: "",
+  });
+  const [saving, setSaving] = useState(false);
+  const isEdit = !!existing;
+
+  const save = async () => {
+    if (!f.Title.trim()) return alert("Name is required.");
+    if (!f.Subject.trim()) return alert("Subject is required.");
+    setSaving(true);
+    try {
+      if (isEdit) await actions.updateEmailTemplate(tplId, f);
+      else await actions.createEmailTemplate(f);
+      onClose();
+    } catch (e) { alert("Save failed: " + e.message); } finally { setSaving(false); }
+  };
+  const del = async () => {
+    if (!confirm("Delete this template?")) return;
+    setSaving(true);
+    try { await actions.deleteEmailTemplate(tplId); onClose(); } catch (e) { alert("Delete failed: " + e.message); } finally { setSaving(false); }
+  };
+  const toFlags = (f.DefaultTo || "").split(",").map(s => s.trim()).filter(Boolean);
+  const flipTo = v => {
+    const has = toFlags.includes(v);
+    const next = has ? toFlags.filter(x => x !== v) : [...toFlags, v];
+    setF({ ...f, DefaultTo: next.join(",") });
+  };
+
+  return (
+    <Modal title={isEdit ? "Edit Email Template" : "New Email Template"} width={720} onClose={onClose} footer={
+      <>
+        {isEdit && <button style={S.btnO(C.er, C.er)} onClick={del} disabled={saving}>Delete</button>}
+        <button style={S.btnO()} onClick={onClose} disabled={saving}>Cancel</button>
+        <button style={S.btn(C.hdr)} onClick={save} disabled={saving}>{saving ? "Saving…" : "Save"}</button>
+      </>
+    }>
+      <div style={{ display: "grid", gap: 12 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <div><label style={S.label}>Name *</label><input style={S.input} value={f.Title} onChange={e => setF({ ...f, Title: e.target.value })} /></div>
+          <div><label style={S.label}>Category</label><select style={S.select} value={f.Category} onChange={e => setF({ ...f, Category: e.target.value })}>{EMAIL_TEMPLATE_CATEGORIES.map(c => <option key={c}>{c}</option>)}</select></div>
+        </div>
+        <div>
+          <div style={S.label}>Default recipients (checkboxes pre-fill the send modal)</div>
+          <div style={{ display: "flex", gap: 14, fontSize: 13, flexWrap: "wrap" }}>
+            <label style={{ display: "flex", gap: 6 }}><input type="checkbox" checked={toFlags.includes("Work")} onChange={() => flipTo("Work")} /> Work email</label>
+            <label style={{ display: "flex", gap: 6 }}><input type="checkbox" checked={toFlags.includes("Personal")} onChange={() => flipTo("Personal")} /> Personal email</label>
+            <label style={{ display: "flex", gap: 6 }}><input type="checkbox" checked={toFlags.includes("Manager")} onChange={() => flipTo("Manager")} /> Manager</label>
+          </div>
+        </div>
+        <div><label style={S.label}>Default CC (literal or {`{{Vars}}`})</label><input style={S.input} value={f.DefaultCc} placeholder="hr@newshirepm.com, {{ManagerEmail}}" onChange={e => setF({ ...f, DefaultCc: e.target.value })} /></div>
+        <div><label style={S.label}>Subject *</label><input style={S.input} value={f.Subject} onChange={e => setF({ ...f, Subject: e.target.value })} /></div>
+        <div><label style={S.label}>Body</label><textarea style={{ ...S.textarea, minHeight: 220, fontFamily: mono, fontSize: 13 }} value={f.Body} onChange={e => setF({ ...f, Body: e.target.value })} /></div>
+        <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}><input type="checkbox" checked={f.Active !== false} onChange={e => setF({ ...f, Active: e.target.checked })} /> Active (appears in the Send modal)</label>
+        <div style={{ background: C.t0, border: `1px solid ${C.t1}`, borderRadius: 4, padding: 10, fontSize: 11, color: C.b6 }}>
+          <strong>Variables:</strong> {`{{FirstName}}`}, {`{{LastName}}`}, {`{{FullName}}`}, {`{{PreferredName}}`}, {`{{WorkEmail}}`}, {`{{PersonalEmail}}`}, {`{{JobTitle}}`}, {`{{Department}}`}, {`{{StartDate}}`}, {`{{EndDate}}`}, {`{{ManagerName}}`}, {`{{ManagerEmail}}`}, {`{{SenderName}}`}, {`{{SenderEmail}}`}, {`{{Today}}`}, {`{{JourneyType}}`}.
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// ============================================================
 // EMPLOYEE DETAIL MODAL — Profile, Permissions, Notes, Coaching, Files, Journeys
 // ============================================================
 function EmployeeDetailModal({ email, onClose }) {
@@ -2287,7 +2545,7 @@ function EmployeeDetailModal({ email, onClose }) {
   const [saving, setSaving] = useState(false);
   const [permDraft, setPermDraft] = useState({});
   const [permReason, setPermReason] = useState("");
-  const [profileDraft, setProfileDraft] = useState(() => emp ? { Title: emp.Title || "", JobTitle: emp.JobTitle || "", Email: emp.Email || "", ManagerEmail: emp.ManagerEmail || "", Department: emp.Department || "", EmployeeActive: emp.EmployeeActive !== false } : { EmployeeActive: true });
+  const [profileDraft, setProfileDraft] = useState(() => emp ? { Title: emp.Title || "", JobTitle: emp.JobTitle || "", Email: emp.Email || "", PersonalEmail: emp.PersonalEmail || "", ManagerEmail: emp.ManagerEmail || "", Department: emp.Department || "", EmployeeActive: emp.EmployeeActive !== false } : { EmployeeActive: true });
   const canEdit = hasRole("Admin", "HR");
 
   const journeys = useMemo(() => emp ? state.journeys.filter(j => (j.EmployeeEmail || "").toLowerCase() === email).sort((a, b) => (b.Modified || "").localeCompare(a.Modified || "")) : [], [emp, state.journeys, email]);
@@ -2351,9 +2609,12 @@ function EmployeeDetailModal({ email, onClose }) {
           <div style={{ fontSize: 12, color: C.t1 }}>{emp.JobTitle || ""} {emp.Department ? `· ${emp.Department}` : ""}</div>
           <div style={{ fontSize: 11, color: C.g4, marginTop: 2 }}>{emp.Email} {emp.ManagerEmail ? `· Manager: ${emp.ManagerEmail}` : ""}</div>
         </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 4, alignItems: "flex-end" }}>
-          {emp.EmployeeActive === false ? <Badge type="neutral">Inactive</Badge> : <Badge type="ok">Active</Badge>}
-          {journeys[0] && journeys[0].Status !== "Complete" && journeys[0].Status !== "Cancelled" && <Badge type={journeys[0].JourneyType === "Onboarding" ? "inf" : "wn"}>{journeys[0].JourneyType}</Badge>}
+        <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-end" }}>
+          <button style={{ ...S.btnO("#fff", "rgba(255,255,255,.3)"), background: "rgba(255,255,255,.08)", color: "#fff" }} onClick={() => actions.openSendEmail(email)}>✉ Send Email</button>
+          <div style={{ display: "flex", gap: 4 }}>
+            {emp.EmployeeActive === false ? <Badge type="neutral">Inactive</Badge> : <Badge type="ok">Active</Badge>}
+            {journeys[0] && journeys[0].Status !== "Complete" && journeys[0].Status !== "Cancelled" && <Badge type={journeys[0].JourneyType === "Onboarding" ? "inf" : "wn"}>{journeys[0].JourneyType}</Badge>}
+          </div>
         </div>
       </div>
       <div style={{ marginLeft: -18, marginRight: -18, borderBottom: `1px solid ${C.b1}`, padding: "0 18px", display: "flex", overflowX: "auto" }}>
@@ -2372,7 +2633,8 @@ function EmployeeDetailModal({ email, onClose }) {
           <div style={{ display: "grid", gap: 12 }}>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
               <div><label style={S.label}>Full Name</label><input style={S.input} disabled={!canEdit} value={profileDraft.Title || ""} onChange={e => setProfileDraft({ ...profileDraft, Title: e.target.value })} /></div>
-              <div><label style={S.label}>Email</label><input style={S.input} disabled value={profileDraft.Email || ""} /></div>
+              <div><label style={S.label}>Work Email</label><input style={S.input} disabled value={profileDraft.Email || ""} /></div>
+              <div><label style={S.label}>Personal Email</label><input style={S.input} disabled={!canEdit} value={profileDraft.PersonalEmail || ""} placeholder="optional" onChange={e => setProfileDraft({ ...profileDraft, PersonalEmail: e.target.value.toLowerCase() })} /></div>
               <div><label style={S.label}>Job Title</label><input style={S.input} disabled={!canEdit} value={profileDraft.JobTitle || ""} onChange={e => setProfileDraft({ ...profileDraft, JobTitle: e.target.value })} /></div>
               <div><label style={S.label}>Department</label><input style={S.input} disabled={!canEdit} value={profileDraft.Department || ""} onChange={e => setProfileDraft({ ...profileDraft, Department: e.target.value })} /></div>
               <div><label style={S.label}>Manager Email</label><input style={S.input} disabled={!canEdit} value={profileDraft.ManagerEmail || ""} onChange={e => setProfileDraft({ ...profileDraft, ManagerEmail: e.target.value.toLowerCase() })} /></div>
@@ -2888,6 +3150,63 @@ function AccessOverviewCard() {
   );
 }
 
+function EmailTemplatesCard() {
+  const { state, actions, hasRole } = useData();
+  const canEdit = hasRole("Admin", "HR");
+  const [seeding, setSeeding] = useState(false);
+  const seedDefaults = async () => {
+    if (!confirm(`Seed ${DEFAULT_EMAIL_TEMPLATES.length} default email templates? Adds to existing — does not replace.`)) return;
+    setSeeding(true);
+    try { for (const t of DEFAULT_EMAIL_TEMPLATES) await actions.createEmailTemplate({ ...t, Active: true }); }
+    catch (e) { alert("Seed failed: " + e.message); } finally { setSeeding(false); }
+  };
+  const grouped = useMemo(() => {
+    const m = {};
+    for (const t of state.emailTemplates) { const c = t.Category || "Other"; (m[c] = m[c] || []).push(t); }
+    return m;
+  }, [state.emailTemplates]);
+
+  return (
+    <div style={S.card}>
+      <div style={S.cardT}>
+        <span>Email Templates</span>
+        <div style={{ display: "flex", gap: 8 }}>
+          {canEdit && state.emailTemplates.length === 0 && <button style={S.btnO(C.t5)} disabled={seeding} onClick={seedDefaults}>{seeding ? "Seeding…" : "Seed defaults"}</button>}
+          {canEdit && <button style={S.btn(C.hdr)} onClick={() => actions.openEmailTplNew()}>+ New Template</button>}
+        </div>
+      </div>
+      <div style={{ fontSize: 12, color: C.b4, marginBottom: 10 }}>
+        Reusable email bodies for the Send Email button. Body and subject support {`{{Variables}}`} (FirstName, ManagerName, StartDate, etc.) — substituted at send time. Default recipients (Work / Personal / Manager) and CC pre-fill the modal.
+      </div>
+      {state.emailTemplates.length === 0 ? <Empty title="No email templates yet" sub={canEdit ? "Click 'Seed defaults' to load the starter set, or '+ New Template' to write your own." : "Ask HR/Admin to set this up."} /> : (
+        <div style={{ display: "grid", gap: 8 }}>
+          {EMAIL_TEMPLATE_CATEGORIES.map(cat => {
+            const items = grouped[cat] || [];
+            if (items.length === 0) return null;
+            return (
+              <div key={cat}>
+                <div style={{ ...S.sec, marginBottom: 4 }}>{cat}</div>
+                <div style={{ border: `1px solid ${C.b1}`, borderRadius: 4, overflow: "hidden" }}>
+                  {items.map((t, i) => (
+                    <div key={t.id} style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 10, alignItems: "center", padding: "8px 10px", borderBottom: i < items.length - 1 ? `1px solid ${C.b1}` : "none", background: C.wh }}>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontWeight: 600, color: C.t7 }}>{t.Title}</div>
+                        <div style={{ fontSize: 11, color: C.b4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.Subject}</div>
+                        <div style={{ fontSize: 10, color: C.b4, marginTop: 2 }}>To: {t.DefaultTo || "(none)"} {t.DefaultCc ? `· CC: ${t.DefaultCc}` : ""}</div>
+                      </div>
+                      {canEdit && <button style={{ ...S.btnO(C.t5), ...S.xs }} onClick={() => actions.openEmailTplEdit(t.id)}>Edit</button>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SetupTab() {
   const { state, actions } = useData();
   const [seedingApps, setSeedingApps] = useState(false);
@@ -2903,6 +3222,8 @@ function SetupTab() {
     { label: `${CONFIG.lists.files} document library`, ok: true, hint: "Per-employee HR documents." },
     { label: `${CONFIG.lists.reviews} list`,        ok: true, hint: "Quarterly performance reviews. Re-run provision script if missing." },
     { label: `${CONFIG.lists.payChanges} list`,     ok: true, hint: "Compensation history per employee. Re-run provision script if missing." },
+    { label: `${CONFIG.lists.emailTemplates} list`, ok: true, hint: "Reusable email templates. Re-run provision script if missing." },
+    { label: "Employees.PersonalEmail column",      ok: state.employees.some(e => e.PersonalEmail), hint: "Add personal email addresses on the Profile sub-tab. Falls back to Work email if missing." },
   ];
 
   const seedApps = async () => {
@@ -2930,6 +3251,8 @@ function SetupTab() {
       </div>
 
       <AccessOverviewCard />
+
+      <EmailTemplatesCard />
 
       <div style={S.card}>
         <div style={S.cardT}><span>Apps Registry</span>
@@ -2982,7 +3305,7 @@ function SetupTab() {
 // ============================================================
 function App() {
   const { acct, token, login, logout, refresh, err: authErr, ready } = useMsal();
-  const [state, setState] = useState({ employees: [], journeys: [], templates: [], journeyTasks: [], config: {}, apps: [], notes: [], audit: [], reviews: [], payChanges: [] });
+  const [state, setState] = useState({ employees: [], journeys: [], templates: [], journeyTasks: [], config: {}, apps: [], notes: [], audit: [], reviews: [], payChanges: [], emailTemplates: [] });
   const [loading, setLoading] = useState(false);
   const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
   const [loadErr, setLoadErr] = useState(null);
@@ -2997,6 +3320,8 @@ function App() {
   const [editPayId, setEditPayId] = useState(null);
   const [newPayFor, setNewPayFor] = useState(null);
   const [adHocTaskForJourneyId, setAdHocTaskForJourneyId] = useState(null);
+  const [sendEmailFor, setSendEmailFor] = useState(null);
+  const [editEmailTplId, setEditEmailTplId] = useState(null);
 
   const currentEmail = (acct?.username || "").toLowerCase();
   const me = state.employees.find(e => (e.Email || "").toLowerCase() === currentEmail);
@@ -3147,6 +3472,43 @@ function App() {
       await gDelete(tk, `${SITE}/lists/${CONFIG.lists.payChanges}/items/${id}`);
       setState(s => ({ ...s, payChanges: s.payChanges.filter(p => String(p.id) !== String(id)) }));
     }),
+
+    // ── Email Templates (admin-edited library of reusable templates) ──
+    openEmailTplEdit: id => setEditEmailTplId(id),
+    openEmailTplNew: () => setEditEmailTplId("__new__"),
+    createEmailTemplate: async (fields) => withToken(async tk => {
+      const r = await gPost(tk, lUrl(CONFIG.lists.emailTemplates), { Title: fields.Title, Active: true, ...fields });
+      const created = { id: r.id, ...r.fields };
+      setState(s => ({ ...s, emailTemplates: [...s.emailTemplates, created] }));
+      return created;
+    }),
+    updateEmailTemplate: async (id, patch) => withToken(async tk => {
+      await gPatch(tk, iUrl(CONFIG.lists.emailTemplates, id), patch);
+      setState(s => ({ ...s, emailTemplates: s.emailTemplates.map(t => String(t.id) === String(id) ? { ...t, ...patch } : t) }));
+    }),
+    deleteEmailTemplate: async (id) => withToken(async tk => {
+      await gDelete(tk, `${SITE}/lists/${CONFIG.lists.emailTemplates}/items/${id}`);
+      setState(s => ({ ...s, emailTemplates: s.emailTemplates.filter(t => String(t.id) !== String(id)) }));
+    }),
+    // Compose / send. Returns sent payload for the caller to record if desired.
+    openSendEmail: forEmail => setSendEmailFor((forEmail || "").toLowerCase()),
+    sendEmail: async ({ to, cc, subject, bodyHtml }) => withToken(async tk => {
+      const toRecipients = (to || []).filter(Boolean).map(a => ({ emailAddress: { address: a } }));
+      const ccRecipients = (cc || []).filter(Boolean).map(a => ({ emailAddress: { address: a } }));
+      const res = await fetch("https://graph.microsoft.com/v1.0/me/sendMail", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${tk}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message: {
+            subject: subject || "",
+            body: { contentType: "HTML", content: bodyHtml || "" },
+            toRecipients, ccRecipients,
+          },
+          saveToSentItems: true,
+        }),
+      });
+      if (!res.ok) throw new Error(`sendMail ${res.status} ${await res.text().catch(() => '')}`);
+    }),
   }), [withToken, reload, state.employees, state.apps, currentEmail]);
 
   const ctxValue = { state, actions, role, roles, hasRole, currentEmail, me };
@@ -3216,6 +3578,8 @@ function App() {
         {(editReviewId || newReviewFor) && <ReviewEditModal reviewId={editReviewId} forEmail={newReviewFor} onClose={() => { setEditReviewId(null); setNewReviewFor(null); }} />}
         {(editPayId || newPayFor) && <PayChangeEditModal payId={editPayId} forEmail={newPayFor} onClose={() => { setEditPayId(null); setNewPayFor(null); }} />}
         {adHocTaskForJourneyId && <AdHocTaskModal journeyId={adHocTaskForJourneyId} onClose={() => setAdHocTaskForJourneyId(null)} />}
+        {sendEmailFor && <SendEmailModal forEmail={sendEmailFor} onClose={() => setSendEmailFor(null)} />}
+        {editEmailTplId && <EmailTemplateEditModal tplId={editEmailTplId === "__new__" ? null : editEmailTplId} onClose={() => setEditEmailTplId(null)} />}
       </div>
     </DataCtx.Provider>
   );

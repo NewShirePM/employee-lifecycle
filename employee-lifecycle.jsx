@@ -25,7 +25,13 @@ const CONFIG = {
     reviews:             "ELC_QuarterlyReviews",  // quarterly performance reviews
     payChanges:          "ELC_PayChanges",        // compensation history
     emailTemplates:      "ELC_EmailTemplates",    // reusable email templates with {{var}} substitution
+    // Cross-app reads — NewShire University LMS lists. Read-only here.
+    luCourses:           "TrainingCourses",
+    luAssignments:       "TrainingAssignments",
+    luCompletions:       "TrainingCompletions",
   },
+  // NewShire University deep-link base — used in Training Compliance cards
+  universityUrl:       "https://newshirepm.github.io/newshire-university/",
   reviewIntervalDays: 90,         // expected cadence between reviews (once a baseline exists)
   reviewOverdueDays: 100,         // flag as overdue once gap exceeds this
   // First-cycle anchor: until each employee has a baseline review, this is the
@@ -739,7 +745,7 @@ function normalizeApp(raw) {
 }
 
 async function loadAll(token) {
-  const [emp, jrn, tpl, jt, cfg, apps, notes, audit, reviews, pay, emailTpl] = await Promise.all([
+  const [emp, jrn, tpl, jt, cfg, apps, notes, audit, reviews, pay, emailTpl, luCourses, luAssign, luComp] = await Promise.all([
     safeGet(token, "Employees",      `${lUrl(CONFIG.lists.employees)}?expand=fields&$top=500`),
     safeGet(token, "Journeys",       `${lUrl(CONFIG.lists.journeys)}?expand=fields&$top=500`),
     safeGet(token, "TemplateTasks",  `${lUrl(CONFIG.lists.templateTasks)}?expand=fields&$top=500`),
@@ -751,6 +757,9 @@ async function loadAll(token) {
     safeGet(token, "Reviews",        `${lUrl(CONFIG.lists.reviews)}?expand=fields&$top=2000`),
     safeGet(token, "PayChanges",     `${lUrl(CONFIG.lists.payChanges)}?expand=fields&$top=2000`),
     safeGet(token, "EmailTemplates", `${lUrl(CONFIG.lists.emailTemplates)}?expand=fields&$top=200`),
+    safeGet(token, "LU Courses",     `${lUrl(CONFIG.lists.luCourses)}?expand=fields&$top=500`),
+    safeGet(token, "LU Assignments", `${lUrl(CONFIG.lists.luAssignments)}?expand=fields&$top=4000`),
+    safeGet(token, "LU Completions", `${lUrl(CONFIG.lists.luCompletions)}?expand=fields&$top=4000`),
   ]);
   const employees = emp.map(e => ({ id: e.id, ...e.fields }));
   const journeys = jrn.map(j => ({ id: j.id, ...j.fields }));
@@ -763,8 +772,32 @@ async function loadAll(token) {
   const reviewsList = reviews.map(r => ({ id: r.id, ...r.fields }));
   const payChangesList = pay.map(p => ({ id: p.id, ...p.fields }));
   const emailTemplatesList = emailTpl.map(t => ({ id: t.id, ...t.fields })).filter(t => t.Active !== false).sort((a, b) => (a.Category || "").localeCompare(b.Category || "") || (a.Title || "").localeCompare(b.Title || ""));
+  // NewShire University — read-only cross-app data for training compliance.
+  // Lookup-shape fields surface as `<base>LookupId` via Graph (per memory note).
+  const luCoursesList = luCourses.map(c => ({ id: String(c.id), ...c.fields }));
+  const luAssignmentsList = luAssign.map(a => ({
+    id: String(a.id),
+    EmployeeEmail: (a.fields?.AssignEmployeeEmail || "").toLowerCase(),
+    CourseId: String(a.fields?.AssignCourseIDLookupId || a.fields?.AssignCourseID || ""),
+    DueDate: a.fields?.AssignDueDate ? String(a.fields.AssignDueDate).split("T")[0] : "",
+    AssignedDate: a.fields?.AssignDate || a.fields?.Created || "",
+    Status: a.fields?.AssignStatus || "",
+  }));
+  const luCompletionsList = luComp.map(c => ({
+    id: String(c.id),
+    EmployeeEmail: (c.fields?.EmployeeEmail || "").toLowerCase(),
+    CourseId: String(c.fields?.CompCourseIDLookupId || c.fields?.CompCourseID || ""),
+    CompletedDate: c.fields?.CompletedDate ? String(c.fields.CompletedDate).split("T")[0] : "",
+    Score: Number(c.fields?.Score || 0),
+    Status: c.fields?.CompStatus || "",
+  }));
   const config = cfg.length > 0 ? (() => { try { return JSON.parse(cfg[0].fields.ConfigJSON || "{}"); } catch { return {}; } })() : {};
-  return { employees, journeys, templates, journeyTasks, config, apps: appsList, notes: notesList, audit: auditList, reviews: reviewsList, payChanges: payChangesList, emailTemplates: emailTemplatesList };
+  return {
+    employees, journeys, templates, journeyTasks, config,
+    apps: appsList, notes: notesList, audit: auditList,
+    reviews: reviewsList, payChanges: payChangesList, emailTemplates: emailTemplatesList,
+    luCourses: luCoursesList, luAssignments: luAssignmentsList, luCompletions: luCompletionsList,
+  };
 }
 
 // ============================================================
@@ -2096,6 +2129,50 @@ function reviewStatusFor(employee, reviews, journeys = []) {
 function fmtMoney(n) { if (n == null || isNaN(n)) return "—"; return "$" + Number(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
 
 // ============================================================
+// NewShire University training-compliance helper
+// Returns { complete, inProgress, overdue, dueSoon, upcoming, total, overall,
+//           overdueItems[], dueSoonItems[], recentPasses[] }
+// where `overall` is one of "ok" | "due-soon" | "overdue" | "none".
+// `none` means the employee has no assignments on file in NewShire University.
+// ============================================================
+function getTrainingComplianceFor(employeeEmail, assignments, completions, courses) {
+  const email = (employeeEmail || "").toLowerCase();
+  const myAssignments = (assignments || []).filter(a => a.EmployeeEmail === email);
+  if (myAssignments.length === 0) {
+    return { complete: 0, inProgress: 0, overdue: 0, dueSoon: 0, upcoming: 0, total: 0, overall: "none", overdueItems: [], dueSoonItems: [], recentPasses: [] };
+  }
+  const myCompletions = (completions || []).filter(c => c.EmployeeEmail === email);
+  const passedByCourse = {};
+  for (const c of myCompletions) {
+    if (c.Status === "Passed") {
+      const prev = passedByCourse[c.CourseId];
+      if (!prev || c.CompletedDate > prev.CompletedDate) passedByCourse[c.CourseId] = c;
+    }
+  }
+  const courseNameById = {};
+  for (const c of courses || []) courseNameById[String(c.id)] = c.Title || c.CourseName || c.CourseCode || `Course ${c.id}`;
+
+  const overdueItems = [], dueSoonItems = [];
+  let complete = 0, inProgress = 0, overdue = 0, dueSoon = 0, upcoming = 0;
+  for (const a of myAssignments) {
+    const passed = passedByCourse[a.CourseId];
+    if (passed) { complete++; continue; }
+    inProgress++;
+    const du = daysFromNow(a.DueDate);
+    const nameAndDate = { courseName: courseNameById[a.CourseId] || `Course ${a.CourseId}`, dueDate: a.DueDate, daysUntilDue: du };
+    if (du !== null && du < 0) { overdue++; overdueItems.push(nameAndDate); }
+    else if (du !== null && du <= 14) { dueSoon++; dueSoonItems.push(nameAndDate); }
+    else { upcoming++; }
+  }
+  overdueItems.sort((x, y) => (x.dueDate || "").localeCompare(y.dueDate || ""));
+  dueSoonItems.sort((x, y) => (x.dueDate || "").localeCompare(y.dueDate || ""));
+  const recentPasses = myCompletions.filter(c => c.Status === "Passed").sort((x, y) => (y.CompletedDate || "").localeCompare(x.CompletedDate || "")).slice(0, 3)
+    .map(c => ({ courseName: courseNameById[c.CourseId] || `Course ${c.CourseId}`, completedDate: c.CompletedDate, score: c.Score }));
+  const overall = overdue > 0 ? "overdue" : dueSoon > 0 ? "due-soon" : "ok";
+  return { complete, inProgress, overdue, dueSoon, upcoming, total: myAssignments.length, overall, overdueItems, dueSoonItems, recentPasses };
+}
+
+// ============================================================
 // REVIEW EDIT MODAL
 // ============================================================
 function ReviewEditModal({ reviewId, forEmail, onClose }) {
@@ -2739,6 +2816,65 @@ function EmployeeDetailModal({ email, onClose }) {
               </div>
               {canEdit && <button style={S.btn(C.hdr)} onClick={() => actions.openReviewNew(email)}>+ New Review</button>}
             </div>
+            {(() => {
+              const tc = getTrainingComplianceFor(email, state.luAssignments, state.luCompletions, state.luCourses);
+              if (tc.overall === "none") return (
+                <div style={{ background: C.t0, border: `1px solid ${C.t1}`, borderRadius: 6, padding: 12, marginBottom: 12, fontSize: 12, color: C.b4 }}>
+                  <strong style={{ color: C.t7 }}>Training Compliance</strong> — no assignments on file in NewShire University.
+                </div>
+              );
+              const headerColor = tc.overdue > 0 ? C.er : tc.dueSoon > 0 ? C.wn : C.ok;
+              return (
+                <div style={{ background: C.wh, border: `1px solid ${C.b1}`, borderRadius: 6, padding: 12, marginBottom: 12 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, flexWrap: "wrap", gap: 6 }}>
+                    <div style={{ fontWeight: 700, color: C.t7 }}>Training Compliance (NewShire University)</div>
+                    <a href={CONFIG.universityUrl} target="_blank" rel="noreferrer" style={{ fontSize: 11, color: C.inf, textDecoration: "none" }}>Open NewShire University ↗</a>
+                  </div>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
+                    <Badge type="ok">{tc.complete} complete</Badge>
+                    {tc.inProgress > 0 && <Badge type="inf">{tc.inProgress} in progress</Badge>}
+                    {tc.overdue > 0 && <Badge type="er">{tc.overdue} overdue</Badge>}
+                    {tc.dueSoon > 0 && <Badge type="wn">{tc.dueSoon} due soon</Badge>}
+                    {tc.upcoming > 0 && <Badge type="neutral">{tc.upcoming} upcoming</Badge>}
+                  </div>
+                  <ProgressBar value={Math.round((tc.complete / Math.max(1, tc.total)) * 100)} color={headerColor} />
+                  <div style={{ fontSize: 11, color: C.b4, marginTop: 4 }}>{tc.complete} of {tc.total} assignments passed</div>
+                  {tc.overdueItems.length > 0 && (
+                    <div style={{ marginTop: 10 }}>
+                      <div style={{ ...S.sec, color: C.er, marginBottom: 4 }}>Overdue</div>
+                      {tc.overdueItems.map((it, i) => (
+                        <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, padding: "3px 0", borderBottom: i < tc.overdueItems.length - 1 ? `1px solid ${C.b1}` : "none" }}>
+                          <span>{it.courseName}</span>
+                          <span style={{ color: C.er, fontWeight: 600 }}>due {fmtDate(it.dueDate)} · {Math.abs(it.daysUntilDue)}d past</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {tc.dueSoonItems.length > 0 && (
+                    <div style={{ marginTop: 10 }}>
+                      <div style={{ ...S.sec, color: C.wn, marginBottom: 4 }}>Due Soon</div>
+                      {tc.dueSoonItems.map((it, i) => (
+                        <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, padding: "3px 0", borderBottom: i < tc.dueSoonItems.length - 1 ? `1px solid ${C.b1}` : "none" }}>
+                          <span>{it.courseName}</span>
+                          <span style={{ color: C.wn, fontWeight: 600 }}>due {fmtDate(it.dueDate)} · {it.daysUntilDue}d</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {tc.recentPasses.length > 0 && (
+                    <div style={{ marginTop: 10 }}>
+                      <div style={{ ...S.sec, marginBottom: 4 }}>Recent Passes</div>
+                      {tc.recentPasses.map((it, i) => (
+                        <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, padding: "3px 0", borderBottom: i < tc.recentPasses.length - 1 ? `1px solid ${C.b1}` : "none" }}>
+                          <span>{it.courseName}</span>
+                          <span style={{ color: C.b4 }}>{fmtDate(it.completedDate)} · <strong style={{ color: C.ok }}>{it.score}%</strong></span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
             {reviews.length === 0 ? <Empty title="No reviews on file" sub={canEdit ? "Click '+ New Review' to record the first one." : "Nothing on file."} /> : reviews.map(r => (
               <div key={r.id} style={{ background: C.wh, border: `1px solid ${C.b1}`, borderRadius: 6, padding: 12, marginBottom: 10 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
@@ -3016,26 +3152,38 @@ function ReviewsTab() {
   const onboarding = rows.filter(r => r.state === "onboarding");
   const exempt     = rows.filter(r => r.state === "exempt");
 
-  const Card = ({ r, badgeType, badge }) => (
-    <div onClick={() => actions.openEmployee(r.emp.Email)} style={{ cursor: "pointer", background: C.wh, border: `1px solid ${C.b1}`, borderRadius: 6, padding: 12, boxShadow: "0 1px 2px rgba(28,55,64,.04)" }}
-         onMouseEnter={ev => { ev.currentTarget.style.borderColor = C.g5; ev.currentTarget.style.boxShadow = "0 2px 8px rgba(205,160,75,.18)"; }}
-         onMouseLeave={ev => { ev.currentTarget.style.borderColor = C.b1; ev.currentTarget.style.boxShadow = "0 1px 2px rgba(28,55,64,.04)"; }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
-        <Avatar name={r.emp.Title} size={36} />
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontWeight: 700, color: C.t7, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.emp.Title}</div>
-          <div style={{ fontSize: 11, color: C.b4 }}>{r.emp.JobTitle || ""}</div>
+  const Card = ({ r, badgeType, badge }) => {
+    const tc = getTrainingComplianceFor(r.emp.Email, state.luAssignments, state.luCompletions, state.luCourses);
+    const tcBadgeType = tc.overall === "overdue" ? "er" : tc.overall === "due-soon" ? "wn" : tc.overall === "ok" ? "ok" : "neutral";
+    const tcText = tc.overall === "none" ? "No training assigned"
+      : tc.overdue > 0 ? `${tc.complete}/${tc.total} · ${tc.overdue} overdue`
+      : tc.dueSoon > 0 ? `${tc.complete}/${tc.total} · ${tc.dueSoon} due soon`
+      : `${tc.complete}/${tc.total} complete`;
+    return (
+      <div onClick={() => actions.openEmployee(r.emp.Email)} style={{ cursor: "pointer", background: C.wh, border: `1px solid ${C.b1}`, borderRadius: 6, padding: 12, boxShadow: "0 1px 2px rgba(28,55,64,.04)" }}
+           onMouseEnter={ev => { ev.currentTarget.style.borderColor = C.g5; ev.currentTarget.style.boxShadow = "0 2px 8px rgba(205,160,75,.18)"; }}
+           onMouseLeave={ev => { ev.currentTarget.style.borderColor = C.b1; ev.currentTarget.style.boxShadow = "0 1px 2px rgba(28,55,64,.04)"; }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+          <Avatar name={r.emp.Title} size={36} />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontWeight: 700, color: C.t7, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.emp.Title}</div>
+            <div style={{ fontSize: 11, color: C.b4 }}>{r.emp.JobTitle || ""}</div>
+          </div>
+          <Badge type={badgeType}>{badge}</Badge>
         </div>
-        <Badge type={badgeType}>{badge}</Badge>
+        <div style={{ fontSize: 11, color: C.b4 }}>
+          {r.lastReview
+            ? <>Last: <strong>{fmtDate(r.lastReview.ConductedDate)}</strong> · <Badge type={REVIEW_RATING_TYPE[r.lastReview.Rating] || "neutral"} dot={false}>{r.lastReview.Rating}</Badge></>
+            : <>No reviews on file</>}
+        </div>
+        {r.nextDueDate && <div style={{ fontSize: 11, color: C.b4, marginTop: 4 }}>Next due: <strong>{fmtDate(r.nextDueDate)}</strong></div>}
+        <div style={{ marginTop: 6, paddingTop: 6, borderTop: `1px dashed ${C.b1}`, fontSize: 11, color: C.b4, display: "flex", alignItems: "center", gap: 6 }}>
+          <span>Training:</span>
+          <Badge type={tcBadgeType} dot={false}>{tcText}</Badge>
+        </div>
       </div>
-      <div style={{ fontSize: 11, color: C.b4 }}>
-        {r.lastReview
-          ? <>Last: <strong>{fmtDate(r.lastReview.ConductedDate)}</strong> · <Badge type={REVIEW_RATING_TYPE[r.lastReview.Rating] || "neutral"} dot={false}>{r.lastReview.Rating}</Badge></>
-          : <>No reviews on file</>}
-      </div>
-      {r.nextDueDate && <div style={{ fontSize: 11, color: C.b4, marginTop: 4 }}>Next due: <strong>{fmtDate(r.nextDueDate)}</strong></div>}
-    </div>
-  );
+    );
+  };
 
   const Section = ({ title, items, type, badge }) => items.length === 0 ? null : (
     <div style={S.card}>
@@ -3088,6 +3236,14 @@ function ReportsTab() {
   const overdueReviews = activeEmps.filter(e => reviewStatusFor(e, state.reviews, state.journeys).state === "overdue");
   const neverReviewed  = activeEmps.filter(e => reviewStatusFor(e, state.reviews, state.journeys).state === "never");
   const raisesLast90 = state.payChanges.filter(p => p.EffectiveDate && (Date.now() - new Date(p.EffectiveDate).getTime()) / 86400000 <= 90 && (p.NewPay > (p.PreviousPay || 0)));
+  // Training compliance roll-up across active employees.
+  const trainingRollup = activeEmps.reduce((acc, e) => {
+    const tc = getTrainingComplianceFor(e.Email, state.luAssignments, state.luCompletions, state.luCourses);
+    if (tc.overall === "overdue") acc.overdueEmps.push(e);
+    acc.overdueCount += tc.overdue;
+    acc.dueSoonCount += tc.dueSoon;
+    return acc;
+  }, { overdueEmps: [], overdueCount: 0, dueSoonCount: 0 });
   return (
     <div>
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
@@ -3097,6 +3253,8 @@ function ReportsTab() {
         <div style={S.kpi}><div style={S.kpiL}>Overdue Reviews</div><div style={{ ...S.kpiV, color: overdueReviews.length > 0 ? C.er : C.t7 }}>{overdueReviews.length}</div></div>
         <div style={S.kpi}><div style={S.kpiL}>Never Reviewed</div><div style={{ ...S.kpiV, color: neverReviewed.length > 0 ? C.wn : C.t7 }}>{neverReviewed.length}</div></div>
         <div style={S.kpi}><div style={S.kpiL}>Raises (90d)</div><div style={S.kpiV}>{raisesLast90.length}</div></div>
+        <div style={S.kpi}><div style={S.kpiL}>Overdue Training</div><div style={{ ...S.kpiV, color: trainingRollup.overdueCount > 0 ? C.er : C.t7 }}>{trainingRollup.overdueCount}</div></div>
+        <div style={S.kpi}><div style={S.kpiL}>Training Due Soon</div><div style={{ ...S.kpiV, color: trainingRollup.dueSoonCount > 0 ? C.wn : C.t7 }}>{trainingRollup.dueSoonCount}</div></div>
         <div style={S.kpi}><div style={S.kpiL}>Completed (30d)</div><div style={S.kpiV}>{last30.length}</div></div>
       </div>
       <div style={S.card}>
@@ -3358,7 +3516,7 @@ function SetupTab() {
 // ============================================================
 function App() {
   const { acct, token, login, logout, refresh, err: authErr, ready } = useMsal();
-  const [state, setState] = useState({ employees: [], journeys: [], templates: [], journeyTasks: [], config: {}, apps: [], notes: [], audit: [], reviews: [], payChanges: [], emailTemplates: [] });
+  const [state, setState] = useState({ employees: [], journeys: [], templates: [], journeyTasks: [], config: {}, apps: [], notes: [], audit: [], reviews: [], payChanges: [], emailTemplates: [], luCourses: [], luAssignments: [], luCompletions: [] });
   const [loading, setLoading] = useState(false);
   const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
   const [loadErr, setLoadErr] = useState(null);

@@ -2779,10 +2779,53 @@ function EmployeeDetailModal({ email, onClose }) {
         )}
         {sub === "permissions" && (
           <div style={{ display: "grid", gap: 12 }}>
+            {/* One-click separation: revoke all app roles + mark inactive.
+                Wraps setEmployeePermissions (so every change is audited) and
+                then upsertEmployee for the Active flag. Re-activating only
+                flips Active back on — does NOT restore prior roles. */}
+            {canEdit && (
+              <div style={{ background: emp.EmployeeActive === false ? C.t0 : C.erb, border: `1px solid ${emp.EmployeeActive === false ? C.t1 : C.er + "33"}`, borderRadius: 6, padding: 12, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                <div>
+                  <div style={{ fontWeight: 700, color: emp.EmployeeActive === false ? C.t7 : C.er, fontSize: 13 }}>{emp.EmployeeActive === false ? "Employee is INACTIVE" : "Active employee"}</div>
+                  <div style={{ fontSize: 11, color: C.b4, marginTop: 2 }}>
+                    {emp.EmployeeActive === false
+                      ? "All app roles are zeroed out. Re-activate only flips the Active flag — you'll need to re-set permissions manually."
+                      : "One-click revoke: sets every app role to None (audit logged per app) and marks the employee inactive."}
+                  </div>
+                </div>
+                {emp.EmployeeActive === false ? (
+                  <button style={S.btnO(C.t5)} disabled={saving} onClick={async () => {
+                    if (!confirm(`Re-activate ${emp.Title || emp.Email}? This only flips the Active flag — app permissions stay at None and must be re-set manually.`)) return;
+                    setSaving(true);
+                    try { await actions.upsertEmployee({ Email: emp.Email, EmployeeActive: true }); }
+                    catch (e) { alert("Failed: " + e.message); }
+                    finally { setSaving(false); }
+                  }}>Re-activate</button>
+                ) : (
+                  <button style={S.btn(C.er)} disabled={saving} onClick={async () => {
+                    const live = state.apps.filter(a => (emp[a.ColumnName] || "None") !== "None" && emp[a.ColumnName]);
+                    if (!confirm(`Revoke all app access for ${emp.Title || emp.Email} and mark them inactive?\n\nThis will set ${live.length} active role${live.length === 1 ? "" : "s"} to None and flip the employee inactive. Each role change is logged.`)) return;
+                    setSaving(true);
+                    try {
+                      // 1. Zero out every app role through the audited path
+                      const allNone = {};
+                      for (const a of state.apps) allNone[a.ColumnName] = "";
+                      await actions.setEmployeePermissions(email, allNone, "Bulk deactivation", null);
+                      // 2. Flip Active off
+                      await actions.upsertEmployee({ Email: emp.Email, EmployeeActive: false });
+                      // 3. Mirror the cleared draft locally so the matrix below reflects reality
+                      const cleared = {}; for (const a of state.apps) cleared[a.ColumnName] = "";
+                      setPermDraft(cleared);
+                    } catch (e) { alert("Failed: " + e.message); }
+                    finally { setSaving(false); }
+                  }}>Deactivate & revoke all access</button>
+                )}
+              </div>
+            )}
             <div style={{ background: C.infb, border: `1px solid ${C.inf}33`, borderRadius: 4, padding: 10, fontSize: 12, color: C.inf }}>
               Set the role this employee has in each NewShire app. <strong>None</strong> means they have no access. Changes are saved with an audit entry.
             </div>
-            <PermissionMatrix apps={state.apps} values={permDraft} disabled={!canEdit} onChange={(col, v) => setPermDraft({ ...permDraft, [col]: v })} />
+            <PermissionMatrix apps={state.apps} values={permDraft} disabled={!canEdit || emp.EmployeeActive === false} onChange={(col, v) => setPermDraft({ ...permDraft, [col]: v })} />
             {canEdit && (
               <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 10, alignItems: "end" }}>
                 <div><label style={S.label}>Reason for change (optional)</label><input style={S.input} value={permReason} placeholder="e.g. promotion, new responsibility, etc." onChange={e => setPermReason(e.target.value)} /></div>

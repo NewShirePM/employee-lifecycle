@@ -186,7 +186,7 @@ function daysFromNow(iso) {
   return Math.round((target - today) / 86400000);
 }
 function initials(name) { if (!name) return "?"; const p = name.trim().split(/\s+/); return p.length > 1 ? (p[0][0] + p[p.length - 1][0]).toUpperCase() : name.slice(0, 2).toUpperCase(); }
-function classifyDue(due, status) { if (status === "Done") return "done"; if (!due) return "none"; const d = daysFromNow(due); if (d == null) return "none"; if (d < 0) return "overdue"; if (d <= 3) return "soon"; return "ok"; }
+function classifyDue(due, status) { if (status === "Done" || status === "N/A") return "done"; if (!due) return "none"; const d = daysFromNow(due); if (d == null) return "none"; if (d < 0) return "overdue"; if (d <= 3) return "soon"; return "ok"; }
 function uniq(arr) { return Array.from(new Set(arr.filter(Boolean))); }
 // Resolve the manager hierarchy from the Employees list so onboarding fills the same
 // ManagerName / Level2 / Level3 columns the rest of the list uses. Walks up to 3 levels
@@ -962,10 +962,16 @@ function TabBar({ tabs, active, onChange }) {
 // ============================================================
 // JOURNEY HELPERS
 // ============================================================
+// A task counts as "closed" (off the action list) when it's Done OR N/A.
+// N/A means the task was reviewed and intentionally skipped — same effect on
+// progress as a completed task, but distinguished in the audit / UI.
+function taskIsClosed(t) { return t.Status === "Done" || t.Status === "N/A"; }
 function journeyProgress(journey, journeyTasks) {
   const tasks = journeyTasks.filter(t => String(t.JourneyId) === String(journey.id));
   const done = tasks.filter(t => t.Status === "Done").length;
-  return { done, total: tasks.length, pct: tasks.length ? Math.round((done / tasks.length) * 100) : 0, tasks };
+  const na = tasks.filter(t => t.Status === "N/A").length;
+  const closed = done + na;
+  return { done, na, closed, total: tasks.length, pct: tasks.length ? Math.round((closed / tasks.length) * 100) : 0, tasks };
 }
 function journeyAnchorDate(j) { return j.JourneyType === "Offboarding" ? j.EndDate : j.StartDate; }
 
@@ -1112,6 +1118,64 @@ function JourneyDetailModal({ journeyId, onClose }) {
   const canEdit = hasRole("Admin", "HR") || (emp && (emp.ManagerEmail || "").toLowerCase() === (currentEmail || "").toLowerCase());
 
   const [saving, setSaving] = useState(false);
+
+  // ── Detect template tasks added since this journey started ──
+  // We look at every active template that would apply to this journey's group
+  // (re-using the same generation rule as StartJourneyModal) and flag any
+  // that don't yet have a corresponding row on the journey, matched by TemplateId.
+  // Sniff the IsContractor flag from existing tasks so the Common-W-2 vs Common-1099
+  // meta-group split is preserved on the sync.
+  const sniffedContractor = useMemo(() => {
+    const ids = new Set(tasks.filter(t => t.TemplateId).map(t => String(t.TemplateId)));
+    const used = state.templates.filter(t => ids.has(String(t.id)));
+    const hasW2   = used.some(t => templateGroups(t).includes("Common - W-2"));
+    const has1099 = used.some(t => templateGroups(t).includes("Common - 1099"));
+    if (has1099 && !hasW2) return true;
+    if (hasW2 && !has1099) return false;
+    return false; // ambiguous — default to false; if wrong, the user can mark added tasks N/A
+  }, [tasks, state.templates]);
+  const syncOpts = { isContractor: j.JourneyType === "Onboarding" && sniffedContractor };
+  const missingTemplates = useMemo(() => {
+    const existingTemplateIds = new Set(tasks.filter(t => t.TemplateId).map(t => String(t.TemplateId)));
+    return state.templates
+      .filter(t => t.JourneyType === j.JourneyType && t.Active !== false)
+      .filter(t => templateAppliesToGroup(t, j.TemplateGroup, syncOpts))
+      .filter(t => !existingTemplateIds.has(String(t.id)))
+      .sort((a, b) => (a.OffsetDays || 0) - (b.OffsetDays || 0) || (a.Title || "").localeCompare(b.Title || ""));
+  }, [state.templates, tasks, j.JourneyType, j.TemplateGroup, syncOpts.isContractor]);
+
+  const syncMissingTemplates = async () => {
+    if (missingTemplates.length === 0) return;
+    if (!confirm(`Add ${missingTemplates.length} new template task${missingTemplates.length === 1 ? "" : "s"} to this journey? Existing tasks stay untouched.`)) return;
+    setSaving(true);
+    try {
+      const anchor = journeyAnchorDate(j) || todayIso();
+      const employeeEmail = (j.EmployeeEmail || "").toLowerCase();
+      const managerEmail = (j.ManagerEmail || emp?.ManagerEmail || "").toLowerCase();
+      // Continue OrderIdx from the highest existing one so sync rows sort to the end
+      // within their phase, but still chronologically by OffsetDays overall.
+      let idx = tasks.reduce((m, t) => Math.max(m, Number(t.OrderIdx) || 0), 0);
+      for (const tpl of missingTemplates) {
+        idx++;
+        await actions.createTask({
+          JourneyId: String(j.id),
+          EmployeeEmail: employeeEmail,
+          Phase: tpl.Phase || "General",
+          Title: tpl.Title,
+          AssigneeRole: tpl.AssigneeRole || "",
+          AssigneeEmail: tpl.AssigneeRole === "Manager" ? managerEmail : tpl.AssigneeRole === "Employee" ? employeeEmail : "",
+          DueDate: addDays(anchor, tpl.OffsetDays || 0),
+          OffsetDays: tpl.OffsetDays || 0,
+          Required: tpl.Required !== false,
+          Status: "Pending",
+          Notes: tpl.Notes || "",
+          OrderIdx: idx,
+          TemplateId: String(tpl.id),
+        });
+      }
+      await actions.reload();
+    } catch (e) { alert("Sync failed: " + e.message); } finally { setSaving(false); }
+  };
   const setTask = async (task, patch) => {
     setSaving(true); try { await actions.updateTask(task.id, patch); } catch (e) { alert("Save failed: " + e.message); } finally { setSaving(false); }
   };
@@ -1168,7 +1232,7 @@ function JourneyDetailModal({ journeyId, onClose }) {
             </div>
           )}
         </div>
-        <div><div style={S.sec}>Progress</div><div style={{ fontWeight: 600 }}>{p.done}/{p.total} ({p.pct}%)</div><ProgressBar value={p.pct} /></div>
+        <div><div style={S.sec}>Progress</div><div style={{ fontWeight: 600 }}>{p.closed}/{p.total} ({p.pct}%){p.na > 0 ? <span style={{ fontWeight: 400, color: C.b4, fontSize: 11 }}> · {p.done} done · {p.na} N/A</span> : null}</div><ProgressBar value={p.pct} /></div>
       </div>
       <div style={{ background: C.t0, border: `1px solid ${C.t1}`, borderRadius: 6, padding: 10, marginBottom: 14, fontSize: 12 }}>
         <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: "4px 12px" }}>
@@ -1211,6 +1275,21 @@ function JourneyDetailModal({ journeyId, onClose }) {
         </div>
       )}
 
+      {/* Template-sync banner: visible whenever templates were added (or activated)
+          AFTER this journey started, so HR can fold the new tasks in without
+          starting over. Only shown to editors and while the journey is open. */}
+      {canEdit && j.Status !== "Cancelled" && j.Status !== "Complete" && missingTemplates.length > 0 && (
+        <div style={{ marginBottom: 12, padding: 10, background: C.infb, border: `1px solid ${C.inf}33`, borderRadius: 6, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <div style={{ fontSize: 12, color: C.t6, minWidth: 0 }}>
+            <strong style={{ color: C.inf }}>{missingTemplates.length} new template task{missingTemplates.length === 1 ? "" : "s"}</strong> available since this journey started.
+            <div style={{ fontSize: 11, color: C.b4, marginTop: 2, maxHeight: 60, overflow: "hidden" }}>
+              {missingTemplates.slice(0, 5).map(t => t.Title).join(" · ")}{missingTemplates.length > 5 ? ` · +${missingTemplates.length - 5} more` : ""}
+            </div>
+          </div>
+          <button style={S.btn(C.inf)} disabled={saving} onClick={syncMissingTemplates}>{saving ? "Adding…" : `Add ${missingTemplates.length} task${missingTemplates.length === 1 ? "" : "s"}`}</button>
+        </div>
+      )}
+
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
         <div style={{ ...S.sec, marginBottom: 0 }}>Tasks</div>
         {canEdit && j.Status !== "Cancelled" && j.Status !== "Complete" && (
@@ -1225,19 +1304,39 @@ function JourneyDetailModal({ journeyId, onClose }) {
             {tasks.filter(t => (t.Phase || "General") === ph).map((t, idx, arr) => {
               const cls = classifyDue(t.DueDate, t.Status);
               const dueColor = { overdue: C.er, soon: C.wn, ok: C.b6, done: C.b4, none: C.b4 }[cls];
+              const isDone = t.Status === "Done";
+              const isNA = t.Status === "N/A";
+              const rowBg = isDone ? C.okb : isNA ? C.b1 : C.wh;
               return (
-                <div key={t.id} style={{ display: "grid", gridTemplateColumns: "auto 1fr auto", alignItems: "center", gap: 10, padding: "10px 12px", borderBottom: idx < arr.length - 1 ? `1px solid ${C.b1}` : "none", background: t.Status === "Done" ? C.okb : C.wh }}>
-                  <input type="checkbox" checked={t.Status === "Done"} disabled={!canEdit || saving} onChange={e => setTask(t, { Status: e.target.checked ? "Done" : "Pending", CompletedDate: e.target.checked ? todayIso() : "", CompletedBy: e.target.checked ? currentEmail : "" })} style={{ width: 18, height: 18, accentColor: C.ok, cursor: canEdit ? "pointer" : "default" }} />
+                <div key={t.id} style={{ display: "grid", gridTemplateColumns: "auto 1fr auto", alignItems: "center", gap: 10, padding: "10px 12px", borderBottom: idx < arr.length - 1 ? `1px solid ${C.b1}` : "none", background: rowBg }}>
+                  <input type="checkbox" checked={isDone} disabled={!canEdit || saving} onChange={e => setTask(t, { Status: e.target.checked ? "Done" : "Pending", CompletedDate: e.target.checked ? todayIso() : "", CompletedBy: e.target.checked ? currentEmail : "" })} style={{ width: 18, height: 18, accentColor: C.ok, cursor: canEdit ? "pointer" : "default" }} />
                   <div style={{ minWidth: 0 }}>
-                    <div style={{ fontWeight: 600, fontSize: 13, color: C.t7, textDecoration: t.Status === "Done" ? "line-through" : "none" }}>{t.Title}{t.Required === false && <span style={{ marginLeft: 6, fontSize: 10, color: C.b4, fontWeight: 500 }}>(optional)</span>}</div>
+                    <div style={{ fontWeight: 600, fontSize: 13, color: isNA ? C.b4 : C.t7, textDecoration: (isDone || isNA) ? "line-through" : "none" }}>
+                      {t.Title}
+                      {t.Required === false && <span style={{ marginLeft: 6, fontSize: 10, color: C.b4, fontWeight: 500 }}>(optional)</span>}
+                      {isNA && <span style={{ marginLeft: 6, fontSize: 10, color: C.b4, fontWeight: 700, textDecoration: "none" }}>· N/A</span>}
+                    </div>
                     <div style={{ display: "flex", gap: 12, fontSize: 11, marginTop: 3, flexWrap: "wrap" }}>
                       <span style={{ color: C.b4 }}>Assignee: <strong style={{ color: C.t6 }}>{t.AssigneeRole || "—"}{t.AssigneeEmail ? ` · ${t.AssigneeEmail}` : ""}</strong></span>
                       <span style={{ color: dueColor, fontWeight: 600 }}>Due {fmtDate(t.DueDate)}</span>
-                      {t.Status === "Done" && t.CompletedDate && <span style={{ color: C.ok }}>✓ {fmtDate(t.CompletedDate)}</span>}
+                      {isDone && t.CompletedDate && <span style={{ color: C.ok }}>✓ {fmtDate(t.CompletedDate)}</span>}
+                      {isNA && <span style={{ color: C.b4 }}>⊘ Marked N/A</span>}
                     </div>
                     {t.Notes && <div style={{ fontSize: 11, color: C.b4, marginTop: 4, whiteSpace: "pre-wrap" }}>{t.Notes}</div>}
                   </div>
-                  {canEdit && <button style={{ ...S.btnO(C.t5), ...S.xs }} onClick={() => actions.openTaskEdit(t.id)}>Edit</button>}
+                  <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                    {canEdit && (
+                      <button
+                        title={isNA ? "Restore to Pending" : "Mark Not Applicable"}
+                        style={{ ...(isNA ? S.btnO(C.b4, C.b3) : S.btnO(C.t5)), ...S.xs }}
+                        disabled={saving}
+                        onClick={() => setTask(t, isNA
+                          ? { Status: "Pending", CompletedDate: "", CompletedBy: "" }
+                          : { Status: "N/A", CompletedDate: todayIso(), CompletedBy: currentEmail })}
+                      >{isNA ? "↺ Restore" : "⊘ N/A"}</button>
+                    )}
+                    {canEdit && <button style={{ ...S.btnO(C.t5), ...S.xs }} onClick={() => actions.openTaskEdit(t.id)}>Edit</button>}
+                  </div>
                 </div>
               );
             })}
@@ -1365,7 +1464,7 @@ function TaskEditModal({ taskId, onClose }) {
         <div><label style={S.label}>Title</label><input style={S.input} value={f.Title} onChange={e => setF({ ...f, Title: e.target.value })} /></div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
           <div><label style={S.label}>Due Date</label><input style={S.input} type="date" value={f.DueDate || ""} onChange={e => setF({ ...f, DueDate: e.target.value })} /></div>
-          <div><label style={S.label}>Status</label><select style={S.select} value={f.Status} onChange={e => setF({ ...f, Status: e.target.value })}><option>Pending</option><option>In Progress</option><option>Done</option><option>Blocked</option></select></div>
+          <div><label style={S.label}>Status</label><select style={S.select} value={f.Status} onChange={e => setF({ ...f, Status: e.target.value })}><option>Pending</option><option>In Progress</option><option>Done</option><option>Blocked</option><option>N/A</option></select></div>
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
           <div><label style={S.label}>Assignee Role</label><select style={S.select} value={f.AssigneeRole} onChange={e => setF({ ...f, AssigneeRole: e.target.value })}><option value="">—</option><option>HR</option><option>IT</option><option>Manager</option><option>Employee</option><option>Admin</option></select></div>
@@ -1969,7 +2068,7 @@ function MyTasksTab() {
   const myEmail = (currentEmail || "").toLowerCase();
   // Drop tasks whose parent journey is Cancelled or Complete — those tasks
   // are no longer actionable even if individually still "Pending".
-  const mine = state.journeyTasks.filter(t => t.Status !== "Done" && taskIsMine(t, myEmail, hasRole))
+  const mine = state.journeyTasks.filter(t => !taskIsClosed(t) && taskIsMine(t, myEmail, hasRole))
     .map(t => ({ ...t, _j: state.journeys.find(j => String(j.id) === String(t.JourneyId)) }))
     .filter(t => t._j && t._j.Status !== "Cancelled" && t._j.Status !== "Complete")
     .sort((a, b) => (a.DueDate || "9999").localeCompare(b.DueDate || "9999"));
@@ -3875,7 +3974,7 @@ function App() {
   const obCount = state.journeys.filter(j => j.JourneyType === "Onboarding" && j.Status !== "Complete" && j.Status !== "Cancelled" && canSeeJourney(j, hasRole, currentEmail, state.employees)).length;
   const offCount = state.journeys.filter(j => j.JourneyType === "Offboarding" && j.Status !== "Complete" && j.Status !== "Cancelled" && canSeeJourney(j, hasRole, currentEmail, state.employees)).length;
   const myCount = state.journeyTasks.filter(t => {
-    if (t.Status === "Done") return false;
+    if (taskIsClosed(t)) return false;
     if (!taskIsMine(t, currentEmail, hasRole)) return false;
     const j = state.journeys.find(jj => String(jj.id) === String(t.JourneyId));
     return j && j.Status !== "Cancelled" && j.Status !== "Complete";

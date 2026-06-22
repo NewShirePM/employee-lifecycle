@@ -143,11 +143,20 @@ const META_GROUP_RULES = {
   },
 };
 function isMetaGroup(name) { return Object.prototype.hasOwnProperty.call(META_GROUP_RULES, name); }
+// A template can apply to multiple groups by storing a comma- or semicolon-
+// separated list in TemplateGroup. Empty = universal (applies to every group).
+function templateGroups(tpl) {
+  if (!tpl || !tpl.TemplateGroup) return [];
+  return String(tpl.TemplateGroup).split(/[;,]/).map(s => s.trim()).filter(Boolean);
+}
 function templateAppliesToGroup(tpl, selectedGroup, opts) {
-  if (!tpl.TemplateGroup) return true;                       // universal
-  if (tpl.TemplateGroup === selectedGroup) return true;      // exact match
-  const meta = META_GROUP_RULES[tpl.TemplateGroup];
-  if (meta && meta.appliesTo(selectedGroup, opts)) return true; // meta-group hit
+  const groups = templateGroups(tpl);
+  if (groups.length === 0) return true;                                // universal
+  if (groups.includes(selectedGroup)) return true;                     // direct hit
+  for (const g of groups) {
+    const meta = META_GROUP_RULES[g];
+    if (meta && meta.appliesTo(selectedGroup, opts)) return true;      // meta hit
+  }
   return false;
 }
 
@@ -1541,11 +1550,17 @@ function StartJourneyModal({ type, onClose }) {
               Determines which template group runs. <strong>{usableTemplates.length}</strong> task{usableTemplates.length === 1 ? "" : "s"} will generate
               {(() => {
                 const all = state.templates.filter(t => t.JourneyType === type && t.Active !== false);
-                const universal = all.filter(t => !t.TemplateGroup).length;
-                const groupSpecific = all.filter(t => t.TemplateGroup === f.TemplateGroup).length;
-                const metas = all.filter(t => isMetaGroup(t.TemplateGroup) && templateAppliesToGroup(t, f.TemplateGroup, tplOpts));
+                const universal = all.filter(t => templateGroups(t).length === 0).length;
+                const groupSpecific = all.filter(t => {
+                  const tg = templateGroups(t);
+                  return tg.length > 0 && tg.includes(f.TemplateGroup) && !tg.some(g => isMetaGroup(g));
+                }).length;
                 const metaBreakdown = {};
-                metas.forEach(t => { metaBreakdown[t.TemplateGroup] = (metaBreakdown[t.TemplateGroup] || 0) + 1; });
+                all.filter(t => templateGroups(t).some(g => isMetaGroup(g)) && templateAppliesToGroup(t, f.TemplateGroup, tplOpts))
+                  .forEach(t => {
+                    const meta = templateGroups(t).find(g => isMetaGroup(g));
+                    if (meta) metaBreakdown[meta] = (metaBreakdown[meta] || 0) + 1;
+                  });
                 const parts = [];
                 if (universal) parts.push(`${universal} universal`);
                 Object.entries(metaBreakdown).forEach(([k, v]) => parts.push(`${v} ${k}`));
@@ -1666,10 +1681,20 @@ function StartJourneyModal({ type, onClose }) {
 // shown only in Templates editor UI, not in the journey-start picker.
 function getAvailableGroups(state, journeyType) {
   const predefined = CONFIG.templateGroups[journeyType] || [];
+  // Multi-group templates contribute each of their groups individually.
   const custom = uniq(state.templates
-    .filter(t => t.JourneyType === journeyType && t.TemplateGroup && !isMetaGroup(t.TemplateGroup))
-    .map(t => t.TemplateGroup));
+    .filter(t => t.JourneyType === journeyType)
+    .flatMap(t => templateGroups(t))
+    .filter(g => g && !isMetaGroup(g)));
   return uniq([...predefined, ...custom]);
+}
+// All Phase strings seen in the templates of a given JourneyType — used to
+// power the Phase autocomplete in the template editor.
+function getAvailablePhases(state, journeyType) {
+  return uniq(state.templates
+    .filter(t => t.JourneyType === journeyType && t.Phase)
+    .map(t => String(t.Phase).trim())
+    .filter(Boolean));
 }
 // Meta-groups defined for a given JourneyType — used to populate the Templates editor filter
 function getMetaGroupsForType(journeyType) {
@@ -1692,8 +1717,9 @@ function TemplatesTab() {
     .filter(t => t.JourneyType === filter)
     .filter(t => {
       if (groupFilter === "__all__") return true;
-      if (groupFilter === "__common__") return !t.TemplateGroup;
-      return t.TemplateGroup === groupFilter;
+      const tg = templateGroups(t);
+      if (groupFilter === "__common__") return tg.length === 0;
+      return tg.includes(groupFilter);
     })
     .sort((a, b) => (a.OffsetDays || 0) - (b.OffsetDays || 0) || (a.Title || "").localeCompare(b.Title || ""));
 
@@ -1746,8 +1772,10 @@ function TemplatesTab() {
     for (const g of groups) m[g] = 0;
     for (const t of state.templates.filter(x => x.JourneyType === filter)) {
       m.__all__++;
-      if (!t.TemplateGroup) m.__common__++;
-      else m[t.TemplateGroup] = (m[t.TemplateGroup] || 0) + 1;
+      const tg = templateGroups(t);
+      if (tg.length === 0) { m.__common__++; continue; }
+      // Multi-group templates count in every group they belong to.
+      for (const g of tg) m[g] = (m[g] || 0) + 1;
     }
     return m;
   }, [state.templates, filter, groups.join("|")]);
@@ -1792,11 +1820,15 @@ function TemplatesTab() {
                 <th style={S.th}>Group</th><th style={S.th}>Phase</th><th style={S.th}>Title</th><th style={S.th}>Assignee</th><th style={S.th}>Offset</th><th style={S.th}>Required</th><th style={S.th}></th>
               </tr></thead>
               <tbody>
-                {visible.map(t => (
+                {visible.map(t => {
+                  const tg = templateGroups(t);
+                  return (
                   <tr key={t.id}>
-                    <td style={S.td}>{t.TemplateGroup
-                      ? <Badge type={isMetaGroup(t.TemplateGroup) ? "inf" : "pu"}>{t.TemplateGroup}</Badge>
-                      : <Badge type="neutral">Universal</Badge>}</td>
+                    <td style={S.td}>{tg.length === 0
+                      ? <Badge type="neutral">Universal</Badge>
+                      : <div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>
+                          {tg.map(g => <Badge key={g} type={isMetaGroup(g) ? "inf" : "pu"}>{g}</Badge>)}
+                        </div>}</td>
                     <td style={S.td}><Badge type="neutral">{t.Phase || "—"}</Badge></td>
                     <td style={S.td}><div style={{ fontWeight: 600, color: C.t7 }}>{t.Title}</div>{t.Notes && <div style={{ fontSize: 11, color: C.b4 }}>{t.Notes}</div>}</td>
                     <td style={S.td}>{t.AssigneeRole}</td>
@@ -1804,7 +1836,8 @@ function TemplatesTab() {
                     <td style={S.td}>{t.Required === false ? <Badge type="neutral">Optional</Badge> : <Badge type="ok">Required</Badge>}</td>
                     <td style={S.td}>{canEdit && <button style={{ ...S.btnO(C.t5), ...S.xs }} onClick={() => setEditing(t)}>Edit</button>}</td>
                   </tr>
-                ))}
+                );
+                })}
               </tbody>
             </table>
           </div>
@@ -1820,8 +1853,24 @@ function TemplateEditModal({ tpl, onClose }) {
   const isNew = !tpl.id;
   const [f, setF] = useState({ JourneyType: tpl.JourneyType, TemplateGroup: tpl.TemplateGroup || "", Phase: tpl.Phase || "", Title: tpl.Title || "", AssigneeRole: tpl.AssigneeRole || "HR", OffsetDays: tpl.OffsetDays ?? 0, Required: tpl.Required !== false, Notes: tpl.Notes || "", Active: tpl.Active !== false });
   const [saving, setSaving] = useState(false);
+  // Working list of group names; persisted back as a comma-separated string.
+  const selectedGroups = useMemo(() => templateGroups({ TemplateGroup: f.TemplateGroup }), [f.TemplateGroup]);
   const groupSuggestions = getAvailableGroups(state, f.JourneyType);
-  const datalistId = `tpl-groups-${f.JourneyType}`;
+  const phaseSuggestions = getAvailablePhases(state, f.JourneyType);
+  const groupDatalistId = `tpl-groups-${f.JourneyType}`;
+  const phaseDatalistId = `tpl-phases-${f.JourneyType}`;
+  const [groupAdd, setGroupAdd] = useState("");
+
+  const setGroups = (next) => setF({ ...f, TemplateGroup: uniq(next).join(", ") });
+  const addGroup = (name) => {
+    const v = (name || "").trim();
+    if (!v) return;
+    if (selectedGroups.includes(v)) return;
+    setGroups([...selectedGroups, v]);
+  };
+  const removeGroup = (name) => setGroups(selectedGroups.filter(g => g !== name));
+  const toggleGroup = (name) => selectedGroups.includes(name) ? removeGroup(name) : addGroup(name);
+
   const save = async () => {
     if (!f.Title) return alert("Title is required.");
     setSaving(true);
@@ -1837,6 +1886,11 @@ function TemplateEditModal({ tpl, onClose }) {
     setSaving(true);
     try { await actions.deleteTemplate(tpl.id); await actions.reload(); onClose(); } catch (e) { alert("Delete failed: " + e.message); } finally { setSaving(false); }
   };
+
+  // Suggestions split into "already added" vs "available to add" so the
+  // chip area below the input shows toggleable shortcuts for known groups.
+  const availableShortcuts = groupSuggestions.filter(g => !selectedGroups.includes(g));
+
   return (
     <Modal title={isNew ? "New Template Task" : "Edit Template Task"} onClose={onClose} footer={
       <>
@@ -1846,17 +1900,49 @@ function TemplateEditModal({ tpl, onClose }) {
       </>
     }>
       <div style={{ display: "grid", gap: 12 }}>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-          <div><label style={S.label}>Journey Type</label><select style={S.select} value={f.JourneyType} onChange={e => setF({ ...f, JourneyType: e.target.value })}><option>Onboarding</option><option>Offboarding</option></select></div>
-          <div>
-            <label style={S.label}>Group</label>
-            <input style={S.input} list={datalistId} value={f.TemplateGroup} placeholder="(blank = Common — applies to every group)" onChange={e => setF({ ...f, TemplateGroup: e.target.value })} />
-            <datalist id={datalistId}>{groupSuggestions.map(g => <option key={g} value={g} />)}</datalist>
+        <div><label style={S.label}>Journey Type</label><select style={{ ...S.select, width: 200 }} value={f.JourneyType} onChange={e => setF({ ...f, JourneyType: e.target.value })}><option>Onboarding</option><option>Offboarding</option></select></div>
+        <div>
+          <label style={S.label}>Groups <span style={{ fontWeight: 400, color: C.b4 }}>(none = applies to every group of this type)</span></label>
+          {/* Selected groups as removable chips */}
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, padding: "6px 8px", border: `1px solid ${C.b2}`, borderRadius: 4, background: C.wh, minHeight: 38, alignItems: "center" }}>
+            {selectedGroups.length === 0 && <span style={{ color: C.b4, fontSize: 12 }}>No groups selected — task will apply to every group of this type</span>}
+            {selectedGroups.map(g => (
+              <span key={g} style={{ display: "inline-flex", alignItems: "center", gap: 4, background: isMetaGroup(g) ? C.infb : C.pub, color: isMetaGroup(g) ? C.inf : C.pu, fontSize: 11, fontWeight: 600, padding: "3px 4px 3px 8px", borderRadius: 99 }}>
+                {g}
+                <button onClick={() => removeGroup(g)} style={{ border: "none", background: "transparent", color: "inherit", fontSize: 14, cursor: "pointer", padding: "0 4px", lineHeight: 1, fontWeight: 700 }} title="Remove">×</button>
+              </span>
+            ))}
           </div>
+          {/* Free-form add input with datalist autocomplete from existing groups */}
+          <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+            <input
+              style={{ ...S.input, flex: 1 }}
+              list={groupDatalistId}
+              value={groupAdd}
+              placeholder="Type a group name and press Enter (or pick from list below)"
+              onChange={e => setGroupAdd(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); addGroup(groupAdd); setGroupAdd(""); } }}
+            />
+            <datalist id={groupDatalistId}>{groupSuggestions.map(g => <option key={g} value={g} />)}</datalist>
+            <button style={{ ...S.btnO(C.t5), ...S.sm }} onClick={() => { addGroup(groupAdd); setGroupAdd(""); }}>Add</button>
+          </div>
+          {/* Toggleable shortcuts for any predefined / existing group not yet selected */}
+          {availableShortcuts.length > 0 && (
+            <div style={{ marginTop: 6, fontSize: 11, color: C.b4 }}>
+              Quick add:{" "}
+              {availableShortcuts.map(g => (
+                <button key={g} type="button" onClick={() => toggleGroup(g)} style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 11, fontWeight: 500, padding: "2px 8px", marginRight: 4, marginTop: 4, background: "transparent", color: C.t6, border: `1px dashed ${C.b2}`, borderRadius: 99, cursor: "pointer" }}>+ {g}</button>
+              ))}
+            </div>
+          )}
         </div>
         <div><label style={S.label}>Title</label><input style={S.input} value={f.Title} onChange={e => setF({ ...f, Title: e.target.value })} /></div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10 }}>
-          <div><label style={S.label}>Phase</label><input style={S.input} value={f.Phase} placeholder="Day 1, Week 1, …" onChange={e => setF({ ...f, Phase: e.target.value })} /></div>
+          <div>
+            <label style={S.label}>Phase</label>
+            <input style={S.input} list={phaseDatalistId} value={f.Phase} placeholder="Day 1, Week 1, …" onChange={e => setF({ ...f, Phase: e.target.value })} />
+            <datalist id={phaseDatalistId}>{phaseSuggestions.map(p => <option key={p} value={p} />)}</datalist>
+          </div>
           <div><label style={S.label}>Assignee Role</label><select style={S.select} value={f.AssigneeRole} onChange={e => setF({ ...f, AssigneeRole: e.target.value })}><option>HR</option><option>IT</option><option>Manager</option><option>Employee</option><option>Admin</option><option>Accounting</option></select></div>
           <div><label style={S.label}>Offset Days</label><input style={S.input} type="number" value={f.OffsetDays} onChange={e => setF({ ...f, OffsetDays: parseInt(e.target.value) || 0 })} /></div>
           <div style={{ alignSelf: "end" }}>
@@ -1866,7 +1952,8 @@ function TemplateEditModal({ tpl, onClose }) {
         </div>
         <div><label style={S.label}>Notes</label><textarea style={S.textarea} value={f.Notes} onChange={e => setF({ ...f, Notes: e.target.value })} /></div>
         <div style={{ fontSize: 11, color: C.b4 }}>
-          <strong>Group</strong> controls which onboarding/offboarding flows this task appears in. Blank = applies to every group of this type. Type a new name to create a new group.<br />
+          <strong>Groups</strong> control which onboarding/offboarding flows this task appears in. Multi-select: the task generates when ANY of the listed groups is chosen at journey start. Leave empty to apply to every group of this type. Type a new name and press Enter (or click Add) to create a new group on the fly.<br />
+          <strong>Phase</strong> picks from any phase you already use, or type a new one.<br />
           <strong>Offset</strong> is days from the anchor: positive = after start (onboarding) or after last day (offboarding); negative = before. E.g. <code style={{ fontFamily: mono }}>-7</code> = 7 days before.
         </div>
       </div>

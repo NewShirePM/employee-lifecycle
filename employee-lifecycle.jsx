@@ -1018,7 +1018,8 @@ function JourneysTab({ type }) {
     .sort((a, b) => (journeyAnchorDate(a) || "9999-12-31").localeCompare(journeyAnchorDate(b) || "9999-12-31"));
 
   const active = list.filter(j => j.Status !== "Complete" && j.Status !== "Cancelled");
-  const completed = list.filter(j => j.Status === "Complete" || j.Status === "Cancelled");
+  const completed = list.filter(j => j.Status === "Complete");
+  const cancelled = list.filter(j => j.Status === "Cancelled");
 
   const k = {
     total: active.length,
@@ -1058,6 +1059,28 @@ function JourneysTab({ type }) {
                     <td style={S.td}><div style={{ display: "flex", alignItems: "center", gap: 8 }}><Avatar name={j.EmployeeName || j._emp?.Title} size={26} /><div><div style={{ fontWeight: 600, color: C.t7 }}>{j.EmployeeName || j._emp?.Title || j.EmployeeEmail}</div><div style={{ fontSize: 11, color: C.b4 }}>{j.JobTitle || j._emp?.JobTitle || ""}</div></div></div></td>
                     <td style={S.td}>{fmtDate(journeyAnchorDate(j))}</td>
                     <td style={S.td}><Badge type={j.Status === "Complete" ? "ok" : "neutral"}>{j.Status}</Badge></td>
+                    <td style={S.td}>{j._p.done}/{j._p.total}</td>
+                    <td style={S.td}><button style={{ ...S.btnO(C.t5), ...S.xs }} onClick={() => setOpenId(j.id)}>Open</button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {cancelled.length > 0 && (
+        <div style={S.card}>
+          <div style={S.cardT}>Canceled Before Completion ({cancelled.length})</div>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead><tr><th style={S.th}>Employee</th><th style={S.th}>Anchor Date</th><th style={S.th}>Status</th><th style={S.th}>Tasks</th><th style={S.th}></th></tr></thead>
+              <tbody>
+                {cancelled.map(j => (
+                  <tr key={j.id}>
+                    <td style={S.td}><div style={{ display: "flex", alignItems: "center", gap: 8 }}><Avatar name={j.EmployeeName || j._emp?.Title} size={26} /><div><div style={{ fontWeight: 600, color: C.t7 }}>{j.EmployeeName || j._emp?.Title || j.EmployeeEmail}</div><div style={{ fontSize: 11, color: C.b4 }}>{j.JobTitle || j._emp?.JobTitle || ""}</div></div></div></td>
+                    <td style={S.td}>{fmtDate(journeyAnchorDate(j))}</td>
+                    <td style={S.td}><Badge type="neutral">{j.Status}</Badge></td>
                     <td style={S.td}>{j._p.done}/{j._p.total}</td>
                     <td style={S.td}><button style={{ ...S.btnO(C.t5), ...S.xs }} onClick={() => setOpenId(j.id)}>Open</button></td>
                   </tr>

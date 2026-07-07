@@ -7,9 +7,9 @@ const { useState, useEffect, useCallback, useRef, useMemo, createContext, useCon
 // CONFIG
 // ============================================================
 const CONFIG = {
-  clientId: "32e75ffa-747a-4cf0-8209-6a19150c4547",
-  tenantId: "33575d04-ca7b-4396-8011-9eaea4030b46",
-  siteId: "vanrockre.sharepoint.com,a02c1cd8-9f1f-4827-8286-7b6b7ce74232,01202419-6625-4499-b0d5-8ceb1cffdba3",
+  clientId: "b0bfcfc0-5e4f-4b58-a90d-b16f7a9f10d7",
+  tenantId: "5e932bcd-838c-4dae-b838-f6d22d7c6b8a",
+  siteId: "newshirepmcom.sharepoint.com,f5d74a99-8b23-477c-aed0-c1682efa5de1,0aa4ab90-0ddc-4a81-a803-06d4f2e1a7d8",
   appName: "EMPLOYEE LIFECYCLE",
   version: "0.3.0",
   lists: {
